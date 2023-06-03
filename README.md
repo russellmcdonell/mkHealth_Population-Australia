@@ -10,8 +10,15 @@ Create test demographic data representing the Australian healthcare ecosystem
 * Birthdate is randomly selected
 * Height, weight and hips measurements are randomly selected from percentiles based upon age
 
-Not all the data in G-NAF CORE is required for this project. The smaller file 'smallGNAM_CORE.psv' contains just the columns of data that are required.
+G-NAF Core can be downloaded from [Australian Government Data website](https://data.gov.au/search?q=G-NAF)
 
+Not all the data in G-NAF Core is required for this project. The script 'selectGNAF.py' can read in G-NAF Core (GNAF_CORE.psv) and output a smaller file of just the required columns.
+
+Often you only need a small data set, so there is no point is selecting from the whole of G-NAF Core; a subset will suffice. And sometimes you only want addresses from a particular state or territory and a subset of G-NAF Core, containing only the addresses from that state or territory will suffice.
+
+The script 'selectGNAF.py' lets you select subsets of G-NAF Core [GNAF_CORE.psv] or a subset of of G-NAF Core that has already been created by 'selectGNAF.py'. [A good strategy is to run 'selectGNAF.py' on G-NAF CORE, with no options selected, to create a cutdown version that you can then use to create specific subsets]
+
+This repository includes some subsets, created using 'selectGNAF.py', from the Febrary 2023 release of G-NAF Core.
 
 <br/><br/>
 Incorporates or developed using [G-NAF Core](https://geoscape.com.au/data/g-naf-core/) © [Geoscape Australia](https://geoscape.com.au/) 2023 Copyright and Disclaimer Notice. Licensed by Geoscape Australia under the Open G-NAF Core [End User Licence Agreement](https://geoscape.com.au/wp-content/uploads/2022/08/EULA-G-NAF-Core-1.pdf).
