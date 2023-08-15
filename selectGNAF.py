@@ -82,14 +82,18 @@ The main code
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-D', '--dataDir', dest='dataDir', default='data',
-                        help='The name of the directory containing source address data and where the subset will be created')
-    parser.add_argument ('-I', '--GNAFinputfile', dest='GNAFinputfile', default='GNAF_CORE.psv', help='The name of the file of GNAF-CORE addresses')
-    parser.add_argument ('-O', '--GNAFoutputfile', required=True, dest='GNAFoutputfile', help='The name of the file for the subset of GNAF-CORE addresses to be created')
+                        help='The name of the directory containing source address data and where the subset will be created(default="data")')
+    parser.add_argument ('-I', '--GNAFinputfile', dest='GNAFinputfile', default='GNAF_CORE.psv',
+                         help='The name of the file of GNAF-CORE addresses(default="GNAF_CORE.psv")')
+    parser.add_argument ('-O', '--GNAFoutputfile', required=True, dest='GNAFoutputfile',
+                         help='The name of the file for the subset of GNAF-CORE addresses to be created')
     parser.add_argument ('-n', '--addresses', dest='noOfAddresses', type=int, help='The number of GNAF_CORE addresses to be included in the subset')
     parser.add_argument ('-s', '--states', dest='states', help='The comma separated list of states to be included in the subset (e.g. -s VIC,WA)')
-    parser.add_argument ('-v', '--verbose', dest='loggingLevel', type=int, choices=range(0,5), help='The level of logging\n\t0=CRITICAL,1=ERROR,2=WARNING,3=INFO,4=DEBUG')
-    parser.add_argument ('-L', '--logDir', dest='logDir', default='logs', help='The name of a directory for the logging file')
-    parser.add_argument ('-l', '--logfile', metavar='logfile', dest='logfile', action='store', help='The name of a logging file')
+    parser.add_argument ('-v', '--verbose', dest='loggingLevel', type=int, choices=range(0,5),
+                         help='The level of logging\n\t0=CRITICAL,1=ERROR,2=WARNING,3=INFO,4=DEBUG')
+    parser.add_argument ('-L', '--logDir', dest='logDir', default='logs',
+                         help='The name of a directory for the logging file(default="logs")')
+    parser.add_argument ('-l', '--logfile', dest='logfile', help='The name of a logging file')
     args = parser.parse_args()
 
     # Parse the command line options
@@ -98,12 +102,22 @@ The main code
     if args.loggingLevel :    # Change the logging level from "WARN" if the -v vebose option is specified
         loggingLevel = args.loggingLevel
         if args.logfile :        # and send it to a file if the -o logfile option is specified
+            # Check that the logDir exists
+            if not os.path.isdir(args.logDir):
+                logging.critical('Usage error - logDir (%s) does not exits', args.logDir)
+                logging.shutdown()
+                sys.exit(EX_USAGE)
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', level=logging_levels[loggingLevel],
                                 filemode='w', filename=os.path.join(args.logDir, args.logfile))
         else :
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', level=logging_levels[loggingLevel])
     else :
         if args.logfile :        # send the default (WARN) logging to a file if the -o logfile option is specified
+            # Check that the logDir exists
+            if not os.path.isdir(args.logDir):
+                logging.critical('Usage error - logDir (%s) does not exits', args.logDir)
+                logging.shutdown()
+                sys.exit(EX_USAGE)
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p',
                                 filemode='w', filename=os.path.join(args.logDir, args.logfile))
         else :
@@ -134,9 +148,8 @@ The main code
     # Read in the G-NAF CORE addresses
     # ADDRESS_DETAIL_PID|DATE_CREATED|ADDRESS_LABEL|ADDRESS_SITE_NAME|BUILDING_NAME|FLAT_TYPE|FLAT_NUMBER|LEVEL_TYPE|LEVEL_NUMBER|NUMBER_FIRST|NUMBER_LAST|LOT_NUMBER|STREET_NAME|STREET_TYPE|STREET_SUFFIX|LOCALITY_NAME|STATE|POSTCODE|LEGAL_PARCEL_ID|MB_CODE|ALIAS_PRINCIPAL|PRINCIPAL_PID|PRIMARY_SECONDARY|PRIMARY_PID|GEOCODE_TYPE|LONGITUDE|LATITUDE
     logging.info('Reading addresses')
-    SA1s = set()            # SA1 values
-    SA1list = []            # A list of SA1s (for random selection)
-    addresses = {}            # key=SA1, value=dict(GNAF_CORE data)
+    addresses = []            # list of addresses
+
     # Map all the overseas territories into NSW and WA
     OTstates = {'2':'NSW', '6':'WA'}
     inCount = outCount = 0
@@ -171,7 +184,7 @@ The main code
                 heading = row.keys()
                 header = False
                 if noOfAddresses is None:
-                    gnafSelection = open(GNAFoutputfile, 'wt', encoding='utf-8-sig', newline="")
+                    gnafSelection = open(os.path.join(dataDir, GNAFoutputfile), 'wt', encoding='utf-8-sig', newline="")
                     gnafWriter = csv.DictWriter(gnafSelection, fieldnames=heading, delimiter='|')
                     gnafWriter.writeheader()
                     logging.info('Copying all %s addresses', GNAFinputfile)
@@ -200,11 +213,7 @@ The main code
                 if (outCount % 100000) == 0:
                     logging.info('%d GNAF_CORE addresses selected', outCount)
                 continue
-            sa1 = MB[mb]
-            SA1s.add(sa1)
-            if sa1 not in addresses:
-                addresses[sa1] = []
-            addresses[sa1].append(row)
+            addresses.append(row)
     logging.info('Total of %d addresses read in', inCount)
 
     if noOfAddresses is None:
@@ -214,17 +223,13 @@ The main code
 
     # Create the subset of addresses
     logging.info('Creating %d GNAF_CORE addresses', noOfAddresses)
-    SA1list = list(SA1s)
     with open(os.path.join(dataDir, GNAFoutputfile), 'wt', encoding='utf-8-sig', newline="") as gnafSelection:
         gnafWriter = csv.DictWriter(gnafSelection, fieldnames=heading, delimiter='|')
         gnafWriter.writeheader()
         for i in range(noOfAddresses):
-            sa1 = random.choice(SA1list)
-            while len(addresses[sa1]) == 0:
-                sa1 = random.choice(SA1list)
-            thisAddress = random.randrange(len(addresses[sa1]))
-            gnafWriter.writerow(addresses[sa1][thisAddress])
-            del addresses[sa1][thisAddress]
+            thisAddress = random.randrange(len(addresses))
+            gnafWriter.writerow(addresses[thisAddress])
+            del addresses[thisAddress]
             if ((i + 1) % 100000) == 0:
                 logging.info('%d GNAF_CORE addresses selected', i + 1)
     logging.info('Total of %d GNAF_CORE addresses selected', i + 1)

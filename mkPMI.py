@@ -6,21 +6,24 @@
 A script to create a CSV file of randomly created patient records
 
 SYNOPSIS
-$ python mkPMI.py [-D dataDir|--dataDir=dataDir] [-O outputDir|--outputDir=outputDir]
-                  [-M PMIoutputfile|--PMIfile=PMIoutputfile] [-A addressFile|--addressFile=addressFile]
+$ python mkPMI.py [-D dataDir|--dataDir=dataDir] [-A addressFile|--addressFile=addressFile]
+                  [-O outputDir|--outputDir=outputDir] [-M PMIoutputfile|--PMIfile=PMIoutputfile]
                   [-r|--makeRandom] [-b|-both] [-a|alias2alias] [-m|-merge2merge] [-i|--IHI] [-x|--extendNames] [-e|--errors]
                   [-v loggingLevel|--loggingLevel=loggingLevel]
                   [-L logDir|--logDir=logDir] [-l logfile|--logfile=logfile]
 
 OPTIONS
 -D dataDir|--dataDir=dataDir
-The directory containing the source names and address data
-
--M PMIoutputfile|--PMIfile=PMIoutputfile
-The PMI output file to be created. Default = master.csv
+The directory containing the source names and address data (default='data')
 
 -A addressFile|--addressFile=addressFile
-The file of GNAF_CORE addresses (or subset)
+The file of GNAF_CORE addresses (or subset) (default='GNAF_CORE.psv')
+
+-O outputDir|--outputDir=outputDir
+The directory in which the output file will be created (default='output')
+
+-M PMIoutputfile|--PMIfile=PMIoutputfile
+The PMI output file to be created (default='master.csv')
 
 -r|--makeRandom
 Make random Australian addresses
@@ -196,20 +199,25 @@ The main code
     progName = progName[0:-3]        # Strip off the .py ending
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-D', '--dataDir', dest='dataDir', default='data', help='The name of the directory containing source names and address data')
-    parser.add_argument('-O', '--outputDir', dest='outputDir', default='testoutput', help='The name of the output directory [mkPMI.cfg will be read from the directory')
-    parser.add_argument ('-M', '--PMIoutputfile', dest='PMIoutputfile', default='master.csv', help='The name of the PMI csv file to be created')
-    parser.add_argument ('-A', '--addressFile', dest='addressFile', default='GNAF_CORE.psv', help='The file of GNAF_CORE addresses (or subset)')
-    parser.add_argument ('-r', '--makeRandom', dest='makeRandom', action='store_true', help='Make random Australian addresses')
-    parser.add_argument ('-b', '--both', dest='both', action='store_true', help='PMI records can be both merged and an alias')
-    parser.add_argument ('-a', '--alias2alias', dest='alias2alias', action='store_true', help='Allow aliases to aliased or merged patient')
-    parser.add_argument ('-m', '--merg2merge', dest='merge2merge', action='store_true', help='Allow merges to aliased or merged patient')
-    parser.add_argument ('-i', '--IHI', dest='IHI', action='store_true', help='Add Australian IHI number')
-    parser.add_argument ('-x', '--extendNames', dest='extendNames', action='store_true', help='Extend names with sequential letters')
-    parser.add_argument ('-e', '--errors', dest='errors', action='store_true', help='Create PMI with errors')
-    parser.add_argument ('-v', '--verbose', dest='loggingLevel', type=int, choices=range(0,5), help='The level of logging\n\t0=CRITICAL,1=ERROR,2=WARNING,3=INFO,4=DEBUG')
-    parser.add_argument ('-L', '--logDir', dest='logDir', default='logs', help='The name of a directory for the logging file')
-    parser.add_argument ('-l', '--logfile', dest='logfile', default='mkPMI.log', help='The name of a logging file')
+    parser.add_argument('-D', '--dataDir', dest='dataDir', default='data',
+                        help='The name of the directory containing source names and address data(default="data")')
+    parser.add_argument('-A', '--addressFile', dest='addressFile', default='GNAF_CORE.psv',
+                        help='The file of GNAF_CORE addresses (or subset) (default="GNAF_CORE.psv})')
+    parser.add_argument('-O', '--outputDir', dest='outputDir', default='output',
+                        help='The name of the output directory [mkPMI.cfg will be read from this directory] (default="output")')
+    parser.add_argument('-M', '--PMIoutputfile', dest='PMIoutputfile', default='master.csv',
+                        help='The name of the PMI csv file to be created(default="master.csv")')
+    parser.add_argument('-r', '--makeRandom', dest='makeRandom', action='store_true', help='Make random Australian addresses')
+    parser.add_argument('-b', '--both', dest='both', action='store_true', help='PMI records can be both merged and an alias')
+    parser.add_argument('-a', '--alias2alias', dest='alias2alias', action='store_true', help='Allow aliases to aliased or merged patient')
+    parser.add_argument('-m', '--merg2merge', dest='merge2merge', action='store_true', help='Allow merges to aliased or merged patient')
+    parser.add_argument('-i', '--IHI', dest='IHI', action='store_true', help='Add Australian IHI number')
+    parser.add_argument('-x', '--extendNames', dest='extendNames', action='store_true', help='Extend names with sequential letters')
+    parser.add_argument('-e', '--errors', dest='errors', action='store_true', help='Create PMI with errors')
+    parser.add_argument('-v', '--verbose', dest='loggingLevel', type=int, choices=range(0,5),
+                        help='The level of logging\n\t0=CRITICAL,1=ERROR,2=WARNING,3=INFO,4=DEBUG')
+    parser.add_argument('-L', '--logDir', dest='logDir', default='logs', help='The name of a directory for the logging file(default="logs")')
+    parser.add_argument('-l', '--logfile', dest='logfile', help='The name of a logging file')
     args = parser.parse_args()
 
     # Parse the command line options
@@ -218,21 +226,31 @@ The main code
     if args.loggingLevel :    # Change the logging level from "WARN" if the -v vebose option is specified
         loggingLevel = args.loggingLevel
         if args.logfile :        # and send it to a file if the -o logfile option is specified
+            # Check that the logDir exists
+            if not os.path.isdir(args.logDir):
+                logging.critical('Usage error - logDir (%s) does not exits', args.logDir)
+                logging.shutdown()
+                sys.exit(EX_USAGE)
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', level=logging_levels[loggingLevel],
                                 filemode='w', filename=os.path.join(args.logDir, args.logfile))
         else :
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', level=logging_levels[loggingLevel])
     else :
         if args.logfile :        # send the default (WARN) logging to a file if the -o logfile option is specified
+            # Check that the logDir exists
+            if not os.path.isdir(args.logDir):
+                logging.critical('Usage error - logDir (%s) does not exits', args.logDir)
+                logging.shutdown()
+                sys.exit(EX_USAGE)
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p',
                                 filemode='w', filename=os.path.join(args.logDir, args.logfile))
         else :
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p')
 
     dataDir = args.dataDir
+    addressFile = args.addressFile
     outputDir = args.outputDir
     PMIoutputfile = args.PMIoutputfile
-    addressFile = args.addressFile
     makeRandom = args.makeRandom
     both = args.both
     alias2alias = args.alias2alias
