@@ -65,6 +65,7 @@ UsedIDs = {}
 UsedIDs['medicareNo'] = set()
 UsedIDs['IHI'] = set()
 UsedIDs['dvaNo'] = set()
+UsedIDs['crnNo'] = set()
 mkRandPatients(intputDir, addressFile, numPatients, extendNames, useShortStreetTypes, makeRandom, minAge, maxAge, UsedIDs, addUR)
 
 import random
@@ -95,6 +96,7 @@ medicareNo = patients[key]['medicareNo']
 IHI = patients[key]['IHI']
 dvaNo = patients[key]['dvaNo']
 dvaType = patients[key]['dvaType']
+crnNo = patients[key]['crnNo']
 married = patients[key]['married']
 race = patients[key]['race']
 height = patients[key]['height']
@@ -107,7 +109,7 @@ LIST = patients[key]['LIST']
 
 
 For databases and files a list of patient data can be accessed as patients[key]['LIST']. The list is assembled in the following order
-title,familyName,givenName,birthdate,sex,streetNo,streetName,streetType,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,mobile,homePhone,businessPhone,email,medicareNo,IHI,dvaNo,dvaType,height,weight,waist,hips,married,race
+title,familyName,givenName,birthdate,sex,streetNo,streetName,streetType,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,mobile,homePhone,businessPhone,email,medicareNo,IHI,dvaNo,dvaType,crnNo,height,weight,waist,hips,married,race
 
 For LIS2 (was ASTM E1394-97) messages the formatted patient data can be accessed as patients[key]['LIS2'].
 The formatted data contains many of the fields in the 'P' record; namely field 1 - Record Type ('P'), fields - 2 Sequence Number (1),
@@ -585,6 +587,7 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
     usedMedicareNo = set()
     usedIHIno = set()
     usedDVAno = set()
+    usedCRNno = set()
     if UsedIDs is not None:
         if 'medicareNo' in UsedIDs:
             usedMedicareNo = UsedIDs['medicareNo']
@@ -592,6 +595,8 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
             usedIHIno = UsedIDs['IHI']
         if 'dvaNo' in UsedIDs:
             usedDVAno = UsedIDs['dvaNo']
+        if 'CRNno' in UsedIDs:
+            usedCRNno = UsedIDs['CRNno']
 
     logging.info('Creating %d demographic records', numPatients)
     for i in range(numPatients):
@@ -697,6 +702,17 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
         else:
             patients[me]['dvaNo'] = None
             patients[me]['dvaType'] = None
+        percent = random.random() * 100
+        if percent < 40.0:
+            while True:        # Loop if the CRN no is not distinct
+                crnNo = random.randint(900000000, 999999999)
+                if crnNo not in usedCRNno:
+                    break
+            usedCRNno.add(crnNo)
+            crnNo = str(crnNo) + random.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+            patients[me]['crnNo'] = crnNo
+        else:
+            patients[me]['crnNo'] = None
 
         ageYears = today.year - birthdate.year    # Some things (height, weight, marrital status) are age dependant
         ageMonths = ageYears * 12
@@ -784,7 +800,7 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
 
         # Setup the HL7 data
         patients[me]['PID'] = 'PID|1||' + patients[me]['medicareNo'] + '^^^AUSHIC^MC~' + patients[me]['IHI'] + '^^^AUSHIC^NI'    # PID-3 Identifiers
-        if patients[me]['dvaNo']:
+        if patients[me]['dvaNo'] is not None:
             patients[me]['PID'] += '~' + patients[me]['dvaNo'] + '^^^AUSDVA'
             if patients[me]['dvaType'] == 'GOL':
                 patients[me]['PID'] += '^DVG'
@@ -792,12 +808,20 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
                 patients[me]['PID'] += '^DVW'
             elif patients[me]['dvaType'] == 'ORN':
                 patients[me]['PID'] += '^DVO'
+        if patients[me]['crnNo'] is not None:
+            patients[me]['PID'] += '~' + patients[me]['crnNo'] + '^^^AUSLINK^AN'
+            percent = random.random() * 100
+            if percent > 30.0:
+                if ageMonths > (65 * 12):
+                    patients[me]['PID'] += '~' + patients[me]['crnNo'] + '^^^^SN'
+                else:
+                    patients[me]['PID'] += '~' + patients[me]['crnNo'] + '^^^^HC'
         if addUR:
             # Add a template for a hospital UR number as an extra repetition
             patients[me]['PID'] += '~<UR>' + '^^^<AUTH>^MR'
         patients[me]['PID'] += '||' + patients[me]['familyName'] + '^' + patients[me]['givenName'] + '^^^^^L'            # PID-5 Name
         patients[me]['PID'] += '||' + patients[me]['birthdate'].replace('-', '')                        # PID-7 Date/Time of Birth
-        patients[me]['PID'] += '|' +patients[me]['sex']                                        # PID-8 Administrative Sex
+        patients[me]['PID'] += '|' + patients[me]['sex']                                        # PID-8 Administrative Sex
         patients[me]['PID'] += '||' + race                                            # PID-10 Race (Aboriginality/Indigenous Status)
         if (useShortStreetTypes is not None) and useShortStreetTypes:
             patients[me]['PID'] += '|' + patients[me]['streetNo'] + ' ' + patients[me]['streetName'] + ' ' + patients[me]['shortStreetType']
@@ -851,6 +875,7 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
         dataList.append(patients[me]['IHI'])
         dataList.append(patients[me]['dvaNo'])
         dataList.append(patients[me]['dvaType'])
+        dataList.append(patients[me]['crnNo'])
         dataList.append(patients[me]['height'])
         dataList.append(patients[me]['weight'])
         dataList.append(patients[me]['waist'])
@@ -866,7 +891,7 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
 
 
 
-def mkRandAddress(oldSA3, nearby, makeRandom):
+def mkRandAddress(oldSA1, nearby, makeRandom):
     '''
     Select an address randomly and/or make up an invalid address
     '''
@@ -877,12 +902,12 @@ def mkRandAddress(oldSA3, nearby, makeRandom):
     # Or a completely made up address made up of a random street name, suburb, postcode etc.
     if not makeRandom:
         #streetNo,streetName,streetType,suburb,state,postcode,country,meshblock,longitude,latitude,sa1
-        if (oldSA3 is None) or (not nearby):
+        if (oldSA1 is None) or (not nearby):
             # Choose a random address
             sa1 = random.choice(SA1list)
         else:
             # Choose a 'nearby' address - one in the same SA3
-            sa1 = random.choice(list(SA3s[oldSA3]))
+            sa1 = random.choice(list(SA3s[oldSA1[:5]]))
         StreetNumber, StreetName, StreetType, StreetSuffix, Suburb, State, Postcode, Country, mb, longitude, latitude = random.choice(addresses[sa1])
         thisAddr['streetNo'] = StreetNumber
         thisAddr['streetName'] = StreetName
@@ -902,7 +927,7 @@ def mkRandAddress(oldSA3, nearby, makeRandom):
         thisAddr['sa1'] = sa1
     else:
         # Choose an SA1 region, state and postcode
-        if (oldSA3 is None) or (not nearby):
+        if (oldSA1 is None) or (not nearby):
             # Choose a random SA1 region
             sa1 = random.choice(SA1list)
             state = SA1states[sa1[:1]]
@@ -912,10 +937,10 @@ def mkRandAddress(oldSA3, nearby, makeRandom):
                 postcode = random.choice(postcodesList)
         else:
             # Choose an SA1 region from the same SA3 region
-            sa1 = random.choice(list(SA3s[oldSA3]))
+            sa1 = random.choice(list(SA3s[oldSA1[:5]]))
             state = SA1states[sa1[:1]]
             # Choose a postcode from this SA3 region which may cross a state boarder
-            postcode = random.choice(list(SA3postcodes[oldSA3]))
+            postcode = random.choice(list(SA3postcodes[oldSA1[:5]]))
         thisAddr['sa1'] = sa1
         thisAddr['postcode'] = postcode
         thisAddr['state'] = state

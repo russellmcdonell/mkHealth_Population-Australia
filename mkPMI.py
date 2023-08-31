@@ -21,6 +21,7 @@ The file of GNAF_CORE addresses (or subset) (default='GNAF_CORE.psv')
 
 -O outputDir|--outputDir=outputDir
 The directory in which the output file will be created (default='output')
+[mkPMI.cfg will be read from this directory]
 
 -M PMIoutputfile|--PMIfile=PMIoutputfile
 The PMI output file to be created (default='master.csv')
@@ -392,7 +393,7 @@ The main code
             patients[me]['Deleted'] = None
             if IHI :
                 if random.random()*100 < percentIHI :                    # Check IHI required
-                    patients[me]['IHI'] = f'{800360990000000 + IHIno:d}{mkLuhn(str(800360990000000 + IHIno)):d}'
+                    patients[me]['IHI'] = f"{800360990000000 + IHIno:d}{mkLuhn(f'{800360990000000 + IHIno:d}'):d}"
                     if skipIHI == 0 :
                         IHIno += 1
                     elif skipIHI < 3 :

@@ -2,7 +2,7 @@
 *.ipynb
 *.pyc
 _pycache__/*
-testoutput/*
+testoutput/*.csv
 data/GNAF_CORE.psv
 data/NSW_GNAF_CORE.psv
 data/VIC_GNAF_CORE.psv

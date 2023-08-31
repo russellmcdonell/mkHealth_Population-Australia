@@ -623,7 +623,7 @@ The main code
             patients[me]['AltUR'] = ''
             if IHI:
                 if random.random()*100 < percentIHI:                    # Check alt IHI required
-                    patients[me]['IHI'] = f"{800360990000000 + IHIno:d}{mkLuhn(f'{800360990000000 + IHIno}'):d}"
+                    patients[me]['IHI'] = f"{800360990000000 + IHIno:d}{mkLuhn(f'{800360990000000 + IHIno:d}'):d}"
                     if skipIHI == 0:
                         IHIno += 1
                     elif skipIHI < 3:
