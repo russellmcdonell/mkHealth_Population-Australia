@@ -664,7 +664,7 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
 
         while True:        # Loop if the medicareNo is not distinct
             medicareNo = patients[me]['postcode'][0:1]
-            if medicareNo == '7':
+            if medicareNo in ['0', '7']:
                 medicareNo = '5'
             medicareNo += f'{random.randint(0, 9999999):07d}'
             medicareNo = mkMedicareNo(medicareNo)

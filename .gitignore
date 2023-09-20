@@ -3,6 +3,7 @@
 *.pyc
 _pycache__/*
 testoutput/*.csv
+testoutput/*.xlsx
 data/GNAF_CORE.psv
 data/NSW_GNAF_CORE.psv
 data/VIC_GNAF_CORE.psv
