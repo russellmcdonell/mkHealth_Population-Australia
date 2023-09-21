@@ -113,7 +113,8 @@ title,familyName,givenName,birthdate,sex,streetNo,streetName,streetType,shortStr
 
 For LIS2 (was ASTM E1394-97) messages the formatted patient data can be accessed as patients[key]['LIS2'].
 The formatted data contains many of the fields in the 'P' record; namely field 1 - Record Type ('P'), fields - 2 Sequence Number (1),
-field 5 - Patient ID Number 3 (IHI, medicare number [, dva number]), field 6 - Patient Name, field 8 - Birthdate, field 9 - Patient Sex, field 10 - Patient Race-Ethic Origin (Aborigniality/Indeginous Status),
+field 3 - Practice-Assigned Patient ID (Medical Record number - if addUR is true a template of <UR> for Medical Record Number(MR), otherwise blank)
+field 5 - Patient ID Number 3 (medicare number), field 6 - Patient Name, field 8 - Birthdate, field 9 - Patient Sex, field 10 - Patient Race-Ethic Origin (Aborigniality/Indeginous Status),
 field 11 - Patient Address, field 13 - Patient Telphone Number, field 17 - Patient Height, field 18 - Patient Weight and field 30 - Marital Status.
 The first two identifier fields are 'tagged'; field 3 - Practice Assigned Patient ID ('<P-3>') and field 4 - Laboratory Assigned Patient ID ('<P-4>').
 These tags should be replaced with valid data.
@@ -204,6 +205,9 @@ SA1s = {}                # key=SA1, value=set of tuples (longitude, latitude, me
 SA1list = []            # A list of SA1s (for random selection)
 SA3s = {}                # key=SA3, value=list of SA1s for each SA3
 SA3postcodes = {}        # key=SA3, value=set of postcodes for each SA3
+SA2s = {}               # key=SA2, value=SA2 name
+SA4s = {}               # key=SA4, value=SA4 name
+SA2inSA4 = {}           # key=SA4, value=set(SA2)
 postcodes = {}            # key=postcode, value=set of the states each postcode occurs in
 postcodesList = []        # A list of postcodes (for random selection)
 suburbs = {}            # key=suburb, value=set of the states each suburb occurs in
@@ -240,6 +244,15 @@ Read in Australian Address from the G-NAF CORE data in the addressFile
             mbReader = csv.DictReader(io.TextIOWrapper(mb, encoding='utf-8-sig'), dialect=csv.excel)
             for row in mbReader:
                 MB[row['MB_CODE_2021']] = row['SA1_CODE_2021']
+                SA2code = row['SA2_CODE_2021']
+                SA2name = row['SA2_NAME_2021']
+                SA2s[SA2code] = SA2name
+                SA4code = row['SA4_CODE_2021']
+                SA4name = row['SA4_NAME_2021']
+                SA4s[SA4code] = SA4name
+                if SA4code not in SA2inSA4:
+                    SA2inSA4[SA4code] = set()
+                SA2inSA4[SA4code].add(SA2code)
 
     # Read in the G-NAF CORE addresses
     # ADDRESS_DETAIL_PID|DATE_CREATED|ADDRESS_LABEL|ADDRESS_SITE_NAME|BUILDING_NAME|FLAT_TYPE|FLAT_NUMBER|LEVEL_TYPE|LEVEL_NUMBER|NUMBER_FIRST|NUMBER_LAST|LOT_NUMBER|STREET_NAME|STREET_TYPE|STREET_SUFFIX|LOCALITY_NAME|STATE|POSTCODE|LEGAL_PARCEL_ID|MB_CODE|ALIAS_PRINCIPAL|PRINCIPAL_PID|PRIMARY_SECONDARY|PRIMARY_PID|GEOCODE_TYPE|LONGITUDE|LATITUDE
@@ -836,7 +849,13 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
         patients[me]['PID'] += '||||||||||||||N'                                         # PID-30 Patient Death Indicator
 
         # Set up the LIS2 data
-        patients[me]['LIS2'] = 'P|1|<P-3>|<P-4>|' + patients[me]['medicareNo'] + '|' + patients[me]['familyName'] + '^' + patients[me]['givenName']    # P-6 Patient Name
+        patients[me]['LIS2'] = 'P|1|'           # P-1, P-2
+        if addUR:
+            # Add a template for a hospital UR number
+            patients[me]['LIS2'] += '<UR>||'    # P-3, P-4
+        else:
+            patients[me]['LIS2'] += '||'        # P-3, P-4
+        patients[me]['LIS2'] += patients[me]['medicareNo'] + '|' + patients[me]['familyName'] + '^' + patients[me]['givenName']    # P-5, P-6 Patient Name
         patients[me]['LIS2'] += '||' + patients[me]['birthdate'].replace('-', '')                    # P-8 Birthdate
         patients[me]['LIS2'] += '|' + patients[me]['sex'] + '|' + race                            # P-9 Patient Sex, P-10 Patient Race-Ethnic Origin (Aboriginality/Indegenous Status)
         if (useShortStreetTypes is not None) and useShortStreetTypes:

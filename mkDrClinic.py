@@ -104,11 +104,10 @@ def mkPrescriberNo(prescriberNo):
     cdigit = '01234567890'
     csum = 0
     if prescriberNo[0] == '0':
-        csum = int(prescriberNo[1]) * 5 + int(prescriberNo[2]) * 8 + int(prescriberNo[3]) * 4 + int(prescriberNo[4]) * 2 + int(prescriberNo[5])
-        csum %= 11
+        csum = (int(prescriberNo[1]) * 5 + int(prescriberNo[2]) * 8 + int(prescriberNo[3]) * 4 + int(prescriberNo[4]) * 2 + int(prescriberNo[5])) % 11
     else:
         csum = int(prescriberNo[0]) + int(prescriberNo[1]) * 3 + int(prescriberNo[2]) * 7 + int(prescriberNo[3]) * 9 + int(prescriberNo[4]) + int(prescriberNo[5]) * 3
-        csum %= 10
+    csum %= 10
     return prescriberNo + cdigit[csum]
 
 
@@ -132,34 +131,37 @@ The main code
     parser.add_argument('-o', '--outfile', metavar='outputfile', dest='outputfile', default='clinicDoctors.csv', help='The name of the clinic and doctors csv file to be created')
     parser.add_argument('-P', '--Patients', dest='Patients', action='store_true', help='Output Patients for each doctor')
     parser.add_argument('-r', '--makeRandom', dest='makeRandom', action='store_true', help='Make random Australian addresses')
-    parser.add_argument('-i', '--HPI', dest='HPI', action='store_true', help='Add Australian HPI-I, providerNo, presriberNo and HPI-O numbers')
+    parser.add_argument('-i', '--HPI', dest='HPI', action='store_true', help='Add Australian HPI-I, providerNo, prescriberNo and HPI-O numbers')
     parser.add_argument('-x', '--extendNames', dest='extendNames', action='store_true', help='Extend names with sequential letters')
     parser.add_argument('-v', '--verbose', dest='loggingLevel', type=int, choices=range(0,5), help='The level of logging\n\t0=CRITICAL,1=ERROR,2=WARNING,3=INFO,4=DEBUG')
     parser.add_argument('-L', '--logDir', dest='logDir', default='logs', help='The name of a directory for the logging file(default="logs")')
     parser.add_argument('-l', '--logfile', metavar='logfile', dest='logfile', help='The name of a logging file')
     args = parser.parse_args()
 
-    # Parse the command line options
+    # Set up logging
     logging_levels = {0:logging.CRITICAL, 1:logging.ERROR, 2:logging.WARNING, 3:logging.INFO, 4:logging.DEBUG}
     logfmt = progName + ' [%(asctime)s]: %(message)s'
-    if args.loggingLevel:    # Change the logging level from "WARN" if the -v vebose option is specified
+    if args.loggingLevel:   # Change the logging level from "WARN" as the -v vebose option was specified
         loggingLevel = args.loggingLevel
         if args.logfile:        # and send it to a file if the -o logfile option is specified
-            logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', level=logging_levels[loggingLevel], filename=os.path.join(args.lodDir, args.logfile))
+            logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', level=logging_levels[loggingLevel],
+                               filemode='w', filename=os.path.join(args.lodDir, args.logfile))
         else:
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', level=logging_levels[loggingLevel])
-    else:
-        if args.logfile:        # send the default (WARN) logging to a file if the -o logfile option is specified
-            logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', filename=os.path.join(args.logDir, args.logfile))
+    else:                   # Send the default (WARN) logging to a file if the -o logfile option is specified
+        if args.logfile:
+            logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p', filemode='w',
+                                filename=os.path.join(args.logDir, args.logfile))
         else:
             logging.basicConfig(format=logfmt, datefmt='%d/%m/%y %H:%M:%S %p')
 
+    # Parse the remaining command line options
     dataDir = args.dataDir
     addressFile = args.addressFile
     outputDir = args.outputDir
     outputfile = args.outputfile
-    Patients = args.Patients
     makeRandom = args.makeRandom
+    Patients = args.Patients
     HPI = args.HPI
     extendNames = args.extendNames
 
