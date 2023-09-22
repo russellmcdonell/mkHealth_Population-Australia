@@ -44,7 +44,7 @@ Set the level of logging that you want.
 The name of the folder for the logging file
 
 -l logfile|--logfile=logfile
-The name of a logginf file where you want all messages captured.
+The name of a logging file where you want all messages captured.
 '''
 
 import sys

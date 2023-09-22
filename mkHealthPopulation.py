@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# pylint: disable=invalid-name, line-too-long, pointless-string-statement
+# pylint: disable=invalid-name, line-too-long, pointless-string-statement, unused-variable, broad-exception-caught, too-many-lines
 
 '''
 A script to create an Excel spreadsheet of randomly created health networks, hospitals, clinics, specialists, GPs and patients
@@ -48,7 +48,7 @@ Set the level of logging that you want.
 The name of the folder for the logging file
 
 -l logfile|--logfile=logfile
-The name of a logginf file where you want all messages captured.
+The name of a logging file where you want all messages captured.
 '''
 
 import sys
@@ -58,14 +58,8 @@ import argparse
 import logging
 import configparser
 import random
-import datetime
-import re
-import string
-import copy
 import json
 from openpyxl import Workbook
-from randPatients import patients, patientKeys, mkRandPatients, mkRandAddress, mkLuhn, selectFamilyName, selectBoysname, selectGirlsname, SA3postcodes, SA4s, SA2s, SA2inSA4, SA1s
-
 from fhir.resources.organization import Organization
 from fhir.resources.healthcareservice import HealthcareService
 from fhir.resources.location import Location
@@ -73,6 +67,8 @@ from fhir.resources.practitioner import Practitioner
 from fhir.resources.practitionerrole import PractitionerRole
 from fhir.resources.careteam import CareTeam
 from fhir.resources.patient import Patient
+from randPatients import patients, patientKeys, mkRandPatients, mkRandAddress, mkLuhn, SA3postcodes, SA2inSA4, SA1s
+
 
 careTeams = {}        # The list of Practitioners in each Organization
 patientDetails = {}    # The patient details plus the list of GPs
@@ -98,21 +94,21 @@ EX_NOPERM = 77            # permission denied
 EX_CONFIG = 78            # configuration error
 
 
-def mkProviderNo(providerNo):
+def mkProviderNo(thisProviderNo):
     '''
     Add a provider location and checksum to a provider number
     '''
-    weight = [3, 5, 8, 4, 2, 1]
+    weights = [3, 5, 8, 4, 2, 1]
     providerLocation = '0123456789ABCDEFGHJKLMNPQRTUVWXY'
     csumChar = 'YXWTLKJHFBA'
 
     csum = 0
-    for i in range(len(weight)):
-        csum += int(providerNo[i]) * weight[i]
+    for i, weight in enumerate(weights):
+        csum += int(thisProviderNo[i]) * weight
         providerLoc = random.choice(range(len(providerLocation)))
         csum += providerLoc * 6
     csum %= 11
-    return('%s%s%s' % (providerNo, providerLocation[providerLoc:providerLoc+1], csumChar[csum:csum+1]))
+    return f'{thisProviderNo}{providerLocation[providerLoc:providerLoc+1]}{csumChar[csum:csum+1]}'
 
 
 def mkPrescriberNo(prescriberNo):
@@ -129,28 +125,31 @@ def mkPrescriberNo(prescriberNo):
     return prescriberNo + cdigit[csum]
 
 
-def createOrganization(record, HPIO, partOfHPIO, name, addr, organizationType):
-    rowData = patients[patientKeys[record]]
+def createOrganization(orgRecord, HPIO, partOfHPIO, orgName, addr, organizationType):
+    '''
+    Create the FHIR_Organization resource
+    '''
+    rowData = patients[patientKeys[orgRecord]]
     organization_dict = {'resourceType':'Organization',
         'id': HPIO}
     if organizationType != 'department':
         if addr is None:
             organization_dict.update({
                 'text': { 'status': 'generated',
-                'div': name + ',<br/>' + rowData['streetNo'] + ' ' + rowData['streetName'] + ' ' + rowData['shortStreetType'] + ', ' + \
-                    rowData['suburb'] + ', ' + rowData['state']            
+                'div': orgName + ',<br/>' + rowData['streetNo'] + ' ' + rowData['streetName'] + ' ' + rowData['shortStreetType'] + ', ' + \
+                    rowData['suburb'] + ', ' + rowData['state']
                 }
             })
         else:
             organization_dict.update({
                 'text': { 'status': 'generated',
                 'div': name + ',<br/>' + addr['streetNo'] + ' ' + addr['streetName'] + ' ' + addr['shortStreetType'] + ', ' + \
-                    addr['suburb'] + ', ' + addr['state']            
+                    addr['suburb'] + ', ' + addr['state']
                 }
             })
     else: organization_dict.update({
             'text': { 'status': 'generated',
-            'div': name
+            'div': orgName
             }
         })
     organization_dict.update({
@@ -169,7 +168,7 @@ def createOrganization(record, HPIO, partOfHPIO, name, addr, organizationType):
                 },
                 'system': 'http://ns.electronichealth.net.au/id/hi/hpio/1.0',
                 'value': HPIO
-            }            
+            }
         ],
         'active': True
     })
@@ -186,7 +185,7 @@ def createOrganization(record, HPIO, partOfHPIO, name, addr, organizationType):
                         ]
                     }
                 ],
-            'name': name
+            'name': orgName
         })
     else:
         organization_dict.update({
@@ -201,7 +200,7 @@ def createOrganization(record, HPIO, partOfHPIO, name, addr, organizationType):
                         ]
                     }
                 ],
-            'name': name
+            'name': orgName
         })
     organization_dict.update({
         'telecom': [
@@ -235,8 +234,8 @@ def createOrganization(record, HPIO, partOfHPIO, name, addr, organizationType):
     organization = Organization.parse_obj(organization_dict)
     try:
         organization_json = json.dumps(organization_dict)
-    except:
-        logging.critical('Bad JSON')
+    except Exception as e:
+        logging.critical('Bad JSON:%s', e.args)
         print(organization_dict)
         sys.stdout.flush()
         logging.shutdown()
@@ -254,15 +253,18 @@ def createOrganization(record, HPIO, partOfHPIO, name, addr, organizationType):
     return organization_json
 
 
-def createLocation(record, HPIO, name, addr, managingHPIO):
-    rowData = patients[patientKeys[record]]
+def createLocation(locRecord, HPIO, locName, addr, managingHPIO):
+    '''
+    Create a FHIR_Location resource
+    '''
+    rowData = patients[patientKeys[locRecord]]
     location_dict = {'resourceType':'Location',
         'id': HPIO,
         'text': { 'status': 'generated',
-        'div': name
+        'div': locName
         },
         'status': 'active',
-        'name': name,
+        'name': locName,
         'address': {
                 'use': 'work',
                 'type': 'postal',
@@ -285,8 +287,8 @@ def createLocation(record, HPIO, name, addr, managingHPIO):
     location = Location.parse_obj(location_dict)
     try:
         location_json = json.dumps(location_dict)
-    except:
-        logging.critical('Bad JSON')
+    except Exception as e:
+        logging.critical('Bad JSON:%s', e.args)
         sys.stdout.flush()
         logging.shutdown()
         sys.exit(EX_DATAERR)
@@ -302,12 +304,15 @@ def createLocation(record, HPIO, name, addr, managingHPIO):
 
     return location_json
 
-def createHealthcareService(record, HPIO, name, serviceType, specialty):
-    rowData = patients[patientKeys[record]]
+def createHealthcareService(serviceRecord, HPIO, serviceName, serviceType, serviceSpecialty):
+    '''
+    Create the FHIR_HealthcareService resource
+    '''
+    rowData = patients[patientKeys[serviceRecord]]
     healthcareService_dict = {'resourceType':'HealthcareService',
         'id': HPIO,
         'text': { 'status': 'generated',
-        'div': name
+        'div': serviceName
         },
         'identifier': [
             {
@@ -324,7 +329,7 @@ def createHealthcareService(record, HPIO, name, serviceType, specialty):
                 },
                 'system': 'http://ns.electronichealth.net.au/id/hi/hpio/1.0',
                 'value': HPIO
-            }            
+            }
         ],
         'active': True,
         'providedBy': {
@@ -365,8 +370,8 @@ def createHealthcareService(record, HPIO, name, serviceType, specialty):
                 'coding': [
                     {
                         'system': 'http://snomed.info/sct',
-                        'code': specialty,
-                        'display': Specialties[specialty]
+                        'code': serviceSpecialty,
+                        'display': Specialties[serviceSpecialty]
                     }
                 ]
             }
@@ -376,7 +381,7 @@ def createHealthcareService(record, HPIO, name, serviceType, specialty):
                 'reference': 'Location/' + HPIO
             }
         ],
-        'name': name,
+        'name': serviceName,
         'telecom': [
             {
                 'system': 'phone',
@@ -389,8 +394,8 @@ def createHealthcareService(record, HPIO, name, serviceType, specialty):
     healthcareService = HealthcareService.parse_obj(healthcareService_dict)
     try:
         healthcareService_json = json.dumps(healthcareService_dict)
-    except:
-        logging.critical('Bad JSON')
+    except Exception as e:
+        logging.critical('Bad JSON:%s', e.args)
         sys.stdout.flush()
         logging.shutdown()
         sys.exit(EX_DATAERR)
@@ -408,19 +413,22 @@ def createHealthcareService(record, HPIO, name, serviceType, specialty):
 
 
 sexName = {'M': 'male', 'F': 'female', 'U': 'unknown'}
-def createPractitioner(record, HPIO, HPII, providerNo, ahpraNo):
-    rowData = patients[patientKeys[record]]
+def createPractitioner(pracRecord, HPIO, HPII, pracProviderNo, pracAhpraNo):
+    '''
+    Create FHIR_Practitioner resource
+    '''
+    rowData = patients[patientKeys[pracRecord]]
     if HPIO not in careTeams:
         careTeams[HPIO] = set()
     careTeams[HPIO].add(HPII)
-    title = rowData['title']
+    pracTitle = rowData['title']
     family = rowData['familyName']
     given = rowData['givenName']
     sex = sexName[rowData['sex']]
     practitioner_dict = {'resourceType':'Practitioner',
         'id': HPII,
         'text': {'status': 'generated',
-            'div': title + ' ' + given + ' ' + family
+            'div': pracTitle + ' ' + given + ' ' + family
         },
         'identifier': [
             {
@@ -445,7 +453,7 @@ def createPractitioner(record, HPIO, HPII, providerNo, ahpraNo):
                     'text': 'Prescriber Number'
                 },
                 'system': 'http://ns.electronichealth.net.au/id/medicare-provider-number',
-                'value': mkProviderNo(providerNo)
+                'value': mkProviderNo(pracProviderNo)
             },
             {
                 'type': {
@@ -457,7 +465,7 @@ def createPractitioner(record, HPIO, HPII, providerNo, ahpraNo):
                     'text': 'Prescriber Number'
                 },
                 'system': 'http://ns.electronichealth.net.au/id/medicare-prescriber-number',
-                'value': mkPrescriberNo(providerNo)
+                'value': mkPrescriberNo(pracProviderNo)
             },
             {
                 'type': {
@@ -469,7 +477,7 @@ def createPractitioner(record, HPIO, HPII, providerNo, ahpraNo):
                     'text': 'Prescriber Number'
                 },
                 'system': 'http://hl7.or.au/id/ahpra-registration-number',
-                'value': 'MED' + str(ahpraNo)
+                'value': 'MED' + str(pracAhpraNo)
             }
         ],
         'active': True,
@@ -478,7 +486,7 @@ def createPractitioner(record, HPIO, HPII, providerNo, ahpraNo):
             'text': given + ' ' + family,
             'family': family,
             'given': [given],
-            'prefix': [title]}
+            'prefix': [pracTitle]}
         ],
         'telecom': [
             {'system': 'phone',
@@ -497,8 +505,8 @@ def createPractitioner(record, HPIO, HPII, providerNo, ahpraNo):
     practitioner = Practitioner.parse_obj(practitioner_dict)
     try:
         practitioner_json = json.dumps(practitioner_dict)
-    except:
-        logging.critical('Bad JSON')
+    except Exception as e:
+        logging.critical('Bad JSON:%s', e.args)
         sys.stdout.flush()
         logging.shutdown()
         sys.exit(EX_DATAERR)
@@ -515,15 +523,18 @@ def createPractitioner(record, HPIO, HPII, providerNo, ahpraNo):
     return practitioner_json
 
 
-def createPractitionerRole(record, HPII, HPIO, role, specialty):
-    rowData = patients[patientKeys[record]]
-    title = rowData['title']
+def createPractitionerRole(roleRecord, HPII, HPIO, roleRole, rolespecialty):
+    '''
+    Create FHIR_PractitionerRole resource
+    '''
+    rowData = patients[patientKeys[roleRecord]]
+    roleTitle = rowData['title']
     family = rowData['familyName']
     given = rowData['givenName']
     practitionerRole_dict = {'resourceType':'PractitionerRole',
         'id': HPII + '-' + HPIO,
         'text': {'status': 'generated',
-            'div': title + ' ' + given + ' ' + family
+            'div': roleTitle + ' ' + given + ' ' + family
         },
         'active': True,
         'practitioner': {
@@ -537,8 +548,8 @@ def createPractitionerRole(record, HPII, HPIO, role, specialty):
                 'coding': [
                     {
                         'system': 'http://snomed.info/sct',
-                        'code': role,
-                        'display': Roles[role]
+                        'code': roleRole,
+                        'display': Roles[roleRole]
                     }
                 ]
             }
@@ -548,8 +559,8 @@ def createPractitionerRole(record, HPII, HPIO, role, specialty):
                 'coding': [
                     {
                         'system': 'http://snomed.info/sct',
-                        'code': specialty,
-                        'display': Specialties[specialty]
+                        'code': rolespecialty,
+                        'display': Specialties[rolespecialty]
                     }
                 ]
             }
@@ -570,8 +581,8 @@ def createPractitionerRole(record, HPII, HPIO, role, specialty):
     practitionerRole = PractitionerRole.parse_obj(practitionerRole_dict)
     try:
         practitionerRole_json = json.dumps(practitionerRole_dict)
-    except:
-        logging.critical('Bad JSON')
+    except Exception as e:
+        logging.critical('Bad JSON:%s', e.args)
         sys.stdout.flush()
         logging.shutdown()
         sys.exit(EX_DATAERR)
@@ -588,22 +599,25 @@ def createPractitionerRole(record, HPII, HPIO, role, specialty):
     return practitionerRole_json
 
 
-def createCareTeam(record, IHI, HPIO):
+def createCareTeam(teamRecord, teamIHI, HPIO):
+    '''
+    Create the FHIR_CareTeam resource
+    '''
     if len(careTeams[HPIO]) == 0:
         return
-    if record is None:        # Template
-        name = 'ReplaceWithGivenName ReplaceWithFamilyName'
+    if teamRecord is None:        # Template
+        teamName = 'ReplaceWithGivenName ReplaceWithFamilyName'
     else:
-        rowData = patients[patientKeys[record]]
+        rowData = patients[patientKeys[teamRecord]]
         family = rowData['familyName']
         given = rowData['givenName']
-        name = given + ' ' + family
+        teamName = given + ' ' + family
     careteam_dict = {'resourceType':'CareTeam',
-        'id': IHI + '-' + HPIO,
+        'id': teamIHI + '-' + HPIO,
         'status': 'active',
-        'name': name,
+        'name': teamName,
         'subject': {
-            'reference': 'Patient/' + IHI
+            'reference': 'Patient/' + teamIHI
         },
         'participant': [
         ]
@@ -623,13 +637,13 @@ def createCareTeam(record, IHI, HPIO):
     careteam = CareTeam.parse_obj(careteam_dict)
     try:
         careteam_json = json.dumps(careteam_dict)
-    except:
-        logging.critical('Bad JSON')
+    except Exception as e:
+        logging.critical('Bad JSON:%s', e.args)
         sys.stdout.flush()
         logging.shutdown()
         sys.exit(EX_DATAERR)
     # print(json.dumps(careteam_dict, indent=4))
-    
+
     # Return the resources
     if len(careteam_json) > 32767:
         logging.critical('Maximum string length for an Excel cell exceeded')
@@ -648,9 +662,12 @@ raceName = {'1': 'Aboriginal but not Torres Straight Islander origin', '2': 'Tor
 dvaName = {'GOL': 'Gold Card', 'WHT': 'White Card', 'ORN': 'Repatriation Pharaceutical Benefits Card'}
 dvaCode = {'GOL': 'DVG', 'WHT': 'DVW', 'ORN': 'DVO'}
 dvaColor = {'GOL': 'Gold', 'WHT': 'White', 'ORN': 'Orange'}
-def createPatient(record, IHI, addr, GPs):
-    rowData = patients[patientKeys[record]]
-    title = rowData['title']
+def createPatient(patientRecord, patientIHI, addr, patientGPs):
+    '''
+    Create the FHIR_Patient resource
+    '''
+    rowData = patients[patientKeys[patientRecord]]
+    patientTitle = rowData['title']
     family = rowData['familyName']
     given = rowData['givenName']
     race = rowData['race']
@@ -666,9 +683,9 @@ def createPatient(record, IHI, addr, GPs):
     dvaType = rowData['dvaType']
     married = rowData['married']
     patient_dict ={'resourceType':'Patient',
-        'id': IHI,
+        'id': patientIHI,
         'text': { 'status': 'generated',
-            'div': title + ' ' + given + ' ' + family + ',<br/>born ' + born[2] + '/' + born[1] + '/' + born[0] + ',<br/>address ' + \
+            'div': patientTitle + ' ' + given + ' ' + family + ',<br/>born ' + born[2] + '/' + born[1] + '/' + born[0] + ',<br/>address ' + \
             line + ',<br/>' + \
             city + ',<br/>' + state + '     ' + postcode
         } ,
@@ -702,18 +719,18 @@ def createPatient(record, IHI, addr, GPs):
                         'code': 'NI',
                         'display': 'National Unique Individual Identifier'}
                     ],
-                    'text': 'IHI'
+                    'text': 'patientIHI'
                 },
                 'system': 'http://ns.electronichealth.net.au/id/hi/ihi/1.0',
-                'value': IHI
+                'value': patientIHI
             }
         ],
         'active': True,
         'name': [ { 'use': 'official',
-            'text': title + ' ' + given + ' ' + family,
+            'text': patientTitle + ' ' + given + ' ' + family,
             'family': family,
             'given': [given],
-            'prefix': [title]
+            'prefix': [patientTitle]
         } ],
         'telecom': [
             {'system': 'phone',
@@ -776,7 +793,7 @@ def createPatient(record, IHI, addr, GPs):
             'system': 'http://ns.electronichealth.net.au/id/dva',
             'value': dvaNo
         })
-    for GP in GPs:
+    for GP in patientGPs:
         patient_dict['generalPractitioner'].append({
             'reference': 'PractitionerRole/' + GP 
         })
@@ -784,8 +801,8 @@ def createPatient(record, IHI, addr, GPs):
     patient = Patient.parse_obj(patient_dict)
     try:
         patient_json = json.dumps(patient_dict)
-    except:
-        logging.critical('Bad JSON')
+    except Exception as e:
+        logging.critical('Bad JSON:%s', e.args)
         sys.stdout.flush()
         logging.shutdown()
         sys.exit(EX_DATAERR)
@@ -999,7 +1016,7 @@ The main code
                             'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
     publicHospitalDepartments = wb.create_sheet('Public Hospital Departments')
     publicHospitalDepartments.append(
-        ['hospital_HPI-O', 'department_HPI-O', 'departmentName', 'facility', 'departmentSpecialty', 'specialtyDescription', 'businessPhone'])
+        ['hospital_HPI-O', 'department_HPI-O', 'departmentName', 'application', 'departmentSpecialty', 'specialtyDescription', 'businessPhone'])
     publicHospitalStaff = wb.create_sheet('Public Hospital Staff')
     publicHospitalStaff.append(['department_HPI-O', 'staffSpecialty', 'specialtyDescription', 'role', 'roleDescription', 'HPI-I',
                                 'providerNo', 'prescriberNo', 'ahpraNo', 'title', 'familyName', 'givenName', 'birthdate', 'sex', 'workMobile', 'businessPhone', 'workEmail'])
@@ -1008,20 +1025,20 @@ The main code
     privateHospitals.append(['hospital_HPI-O', 'hospitalName', 'authority', 'streetNo', 'streetName', 'shortStreetType',
                              'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
     privateHospitalDepartments = wb.create_sheet('Private Hospital Departments')
-    privateHospitalDepartments.append(['hospital_HPI-O', 'department_HPI-O', 'departmentName', 'facility', 'departmentSpecialty', 'specialtyDescription', 'businessPhone'])
+    privateHospitalDepartments.append(['hospital_HPI-O', 'department_HPI-O', 'departmentName', 'application', 'departmentSpecialty', 'specialtyDescription', 'businessPhone'])
     privateHospitalStaff = wb.create_sheet('Private Hospital Staff')
     privateHospitalStaff.append(['department_HPI-O', 'staffSpecialty', 'specialtyDescription', 'role', 'roleDescription', 'HPI-I',
                                  'providerNo', 'prescriberNo', 'ahpraNo', 'title', 'familyName', 'givenName', 'birthdate', 'sex', 'workMobile', 'businessPhone', 'workEmail'])
 
     clinics = wb.create_sheet('Clinics')
-    clinics.append(['clinic_HPI-O', 'clinicName', 'authority', 'facility', 'clinicSpecialty', 'specialtyDescription', 'streetNo', 'streetName', 'shortStreetType',
+    clinics.append(['clinic_HPI-O', 'clinicName', 'authority', 'application', 'clinicSpecialty', 'specialtyDescription', 'streetNo', 'streetName', 'shortStreetType',
                     'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
     clinicStaff = wb.create_sheet('Clinic Staff')
     clinicStaff.append(['clinic_HPI-O', 'staffSpecialty', 'specialtyDescription', 'role', 'roleDescription', 'HPI-I', 'providerNo',
                         'prescriberNo', 'ahpraNo', 'title', 'familyName', 'givenName', 'birthdate', 'sex', 'workMobile', 'businessPhone', 'workEmail'])
 
     specialistServices = wb.create_sheet('Specialist Services')
-    specialistServices.append(['specialistService_HPI-O', 'specialistServiceName', 'authority', 'facility', 'serviceSpecialty', 'specialtyDescription', 'streetNo', 'streetName',
+    specialistServices.append(['specialistService_HPI-O', 'specialistServiceName', 'authority', 'application', 'serviceSpecialty', 'specialtyDescription', 'streetNo', 'streetName',
                                'shortStreetType', 'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
     specialists = wb.create_sheet('Specialists')
     specialists.append(['specialistService_HPI-O', 'specialistSpecialty', 'specialtyDescription', 'role', 'roleDescription',
@@ -1071,7 +1088,7 @@ The main code
         # Assign HPI-O as organization ID
         IHI = patients[patientKeys[record]]['IHI']
         networkHPIO = IHI[:5] + '2' + IHI[6:-1]  # network HPI-O
-        networkHPIO = '%s%d' % (networkHPIO, mkLuhn(networkHPIO))
+        networkHPIO = f'{networkHPIO}{mkLuhn(networkHPIO):d}'
         outputRow.append(networkHPIO)
         if thisNetwork == len(networkNames):
             logging.fatal('Insufficient networkNames on configuration')
@@ -1115,7 +1132,7 @@ The main code
                 record += 1
                 IHI = patients[patientKeys[record]]['IHI']
                 hospital_HPIO = IHI[:5] + '2' + IHI[6:-1]
-                hospital_HPIO = '%s%d' % (hospital_HPIO, mkLuhn(hospital_HPIO))
+                hospital_HPIO = f'{hospital_HPIO}{mkLuhn(hospital_HPIO):d}'
                 outputRow.append(hospital_HPIO)
                 # Assign a name and select a different SA2 in this SA4
                 if hospital == 'associated':
@@ -1166,7 +1183,7 @@ The main code
                     record += 1
                     IHI = patients[patientKeys[record]]['IHI']
                     department_HPIO = IHI[:5] + '2' + IHI[6:-1]
-                    department_HPIO = '%s%d' % (department_HPIO, mkLuhn(department_HPIO))
+                    department_HPIO = f'{department_HPIO}{mkLuhn(department_HPIO):d}'
                     deptHPIOs.add(department_HPIO)
                     outputRow.append(department_HPIO)
                     outputRow.append(department)
@@ -1221,11 +1238,10 @@ The main code
                         deptSpecialists.add(thisRecord)
                         IHI = patients[patientKeys[thisRecord]]['IHI']
                         specialist_HPII = IHI[:5] + '1' + IHI[6:-1]
-                        specialist_HPII = '%s%d' % (
-                            specialist_HPII, mkLuhn(specialist_HPII))
+                        specialist_HPII = f'{specialist_HPII}{mkLuhn(specialist_HPII):d}'
                         outputRow.append(specialist_HPII)
                         while True:        # Loop if the providerNo is not distinct
-                            providerNo = '%06d' % (random.randint(100000, 999999))
+                            providerNo = f'{random.randint(100000, 999999):06d}'
                             if providerNo not in usedProviderNo:
                                 break
                         usedProviderNo[providerNo] = True
@@ -1281,10 +1297,10 @@ The main code
                         deptNurses.add(thisRecord)
                         IHI = patients[patientKeys[thisRecord]]['IHI']
                         nurse_HPII = IHI[:5] + '1' + IHI[6:-1]
-                        nurse_HPII = '%s%d' % (nurse_HPII, mkLuhn(nurse_HPII))
+                        nurse_HPII = f'{nurse_HPII}{mkLuhn(nurse_HPII):d}'
                         outputRow.append(nurse_HPII)
                         while True:        # Loop if the providerNo is not distinct
-                            providerNo = '%06d' % (random.randint(100000, 999999))
+                            providerNo = f'{random.randint(100000, 999999):06d}'
                             if providerNo not in usedProviderNo:
                                 break
                         usedProviderNo[providerNo] = True
@@ -1321,14 +1337,14 @@ The main code
 
         # Now do the local GP clinics for this health network
         noOfClinics = random.randrange(minClinics, maxClinics)
-        # clinics fields:clinic_HPI-O,clinicName,authority,facility,clinicSpecialty,specialtyDescription,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone,email])
+        # clinics fields:clinic_HPI-O,clinicName,authority,application,clinicSpecialty,specialtyDescription,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone,email])
         for thisClinic in range(noOfClinics):
             outputRow = []
             # HPI-O as the organization ID
             record += 1
             IHI = patients[patientKeys[record]]['IHI']
             clinic_HPIO = IHI[:5] + '2' + IHI[6:-1]
-            clinic_HPIO = '%s%d' % (clinic_HPIO, mkLuhn(clinic_HPIO))
+            clinic_HPIO = f'{clinic_HPIO}{mkLuhn(clinic_HPIO):d}'
             outputRow.append(clinic_HPIO)
             uniqueName = False
             while not uniqueName:
@@ -1381,8 +1397,7 @@ The main code
                 record += 1
                 IHI = patients[patientKeys[record]]['IHI']
                 specialist_HPIO = IHI[:5] + '2' + IHI[6:-1]
-                specialist_HPIO = '%s%d' % (
-                    specialist_HPIO, mkLuhn(specialist_HPIO))
+                specialist_HPIO = f'{specialist_HPIO}{mkLuhn(specialist_HPIO):d}'
                 outputRow.append(specialist_HPIO)
                 uniqueName = False
                 while not uniqueName:
@@ -1436,10 +1451,10 @@ The main code
                 clinicSpecialists.add(thisRecord)
                 IHI = patients[patientKeys[thisRecord]]['IHI']
                 specialist_HPII = IHI[:5] + '1' + IHI[6:-1]
-                specialist_HPII = '%s%d' % (specialist_HPII, mkLuhn(specialist_HPII))
+                specialist_HPII = f'{specialist_HPII}{mkLuhn(specialist_HPII):d}'
                 outputRow.append(specialist_HPII)
                 while True:        # Loop if the providerNo is not distinct
-                    providerNo = '%06d' % (random.randint(100000, 999999))
+                    providerNo = f'{random.randint(100000, 999999):06d}'
                     if providerNo not in usedProviderNo:
                         break
                 usedProviderNo[providerNo] = True
@@ -1501,10 +1516,10 @@ The main code
                 clinicDoctors.add(thisRecord)
                 IHI = patients[patientKeys[thisRecord]]['IHI']
                 GP_HPII = IHI[:5] + '1' + IHI[6:-1]
-                GP_HPII = '%s%d' % (GP_HPII, mkLuhn(GP_HPII))
+                GP_HPII = f'{GP_HPII}{mkLuhn(GP_HPII):d}'
                 outputRow.append(GP_HPII)
                 while True:        # Loop if the providerNo is not distinct
-                    providerNo = '%06d' % (random.randint(100000, 999999))
+                    providerNo = f'{random.randint(100000, 999999):06d}'
                     if providerNo not in usedProviderNo:
                         break
                 usedProviderNo[providerNo] = True
@@ -1587,12 +1602,12 @@ The main code
 
     # Then the patients details
     if Patients:
-        for IHI in patientDetails:
-            thisRecord = patientDetails[IHI]['record']
-            thisAddr = patientDetails[IHI]['addr']
-            GPs = patientDetails[IHI]['GPs']
+        for IHI, IHIdetails in patientDetails.items():
+            thisRecord = IHIdetails['record']
+            thisAddr = IHIdetails['addr']
+            GPs = IHIdetails['GPs']
             FHIR_Patient.append([createPatient(thisRecord, IHI, thisAddr, GPs)])
-            
+
     # Then template for department care teams
     for deptHPIO in deptHPIOs:
         FHIR_CareTeam.append(['ReplaceWithIHI', deptHPIO, createCareTeam(None, 'ReplaceWithIHI', deptHPIO)])
