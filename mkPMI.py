@@ -353,7 +353,7 @@ The main code
     noOfPMIrecords = int(((endUR - startUR)/skipUR)*1.5)
 
     UsedIDs = {}
-    mkRandPatients(dataDir, addressFile, noOfPMIrecords, extendNames, False, makeRandom, minAge, maxAge, UsedIDs, False)        # Create enough random patient
+    mkRandPatients(dataDir, addressFile, noOfPMIrecords, extendNames, False, makeRandom, minAge, maxAge, False, UsedIDs, False)        # Create enough random patient
 
     # Create the PMI
     with open(os.path.join(outputDir, PMIoutputfile), 'wt', newline='', encoding='utf-8') as csvfile :

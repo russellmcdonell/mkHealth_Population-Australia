@@ -17,7 +17,9 @@ SYNOPSIS
     UsedIDs['medicareNo'] = set()
     UsedIDs['IHI'] = set()
     UsedIDs['dvaNo'] = set()
-    mkRandPatients(inputDir, addressFile, numPatients, extendNames, useShortStreetTypes, makeRandom, minAge, maxAge, UsedIDs, addUR)
+    UsedIDs['crnNo'] = set()
+    mkFamilies = False
+    mkRandPatients(inputDir, addressFile, numPatients, extendNames, useShortStreetTypes, makeRandom, minAge, maxAge, mkFamilies, UsedIDs, addUR)
 
 The randPatients() subroutine makes random patients, with a date of birth, address, gender, medicareNo, IHI, dvaNo, dvaType,
 phone number, email address, height, weight, waist and hips which can be used as test data.
@@ -44,10 +46,12 @@ Finally, a random, valid street type is chosen from the G-NAF dataset, but not o
 To make random addresses plausible, but improbable, the street number is a random number between 999900 and 999999.
 
 Every patient is assigned a random mobile, home phone number, business phone number and email address.
-Each patient is randomly assigned a birthdate between 'minAgge' and 'maxAge' years prior to today plus a gender based upon the gender of the given name.
+Each patient is randomly assigned a birthdate between 'minAge' and 'maxAge' years prior to today plus a gender based upon the gender of the given name.
 Then 2% of males are reassigned to gender 'U' - unknown. Each patient is also given a marital status; single if the patient is less than 18 years old.
 For the rest, 51% as assigned 'married', 32% 'single', 10% 'devorced' and 7% 'widowed'.
 The patient is also assigned height, weight, waist and hips measurments, based upon their age.
+
+There is an options to assign an average of 4.5 patients to each address, with most patients having the same family name.
 
 mkRandPatients() stores all this data in the dictionary patients{}. The keys are stored in the list patientKeys[].
 randPatient() also creates test patient information in formats suitable for inclusion in databases, files, HL7 messages and ASTM/LIS2 messages.
@@ -61,12 +65,13 @@ inputDir = 'data/.'
 addressFile = 'GNAF_CORE.psv'
 minAge = 15
 maxAge = 80
+mkFamilies = False
 UsedIDs = {}
 UsedIDs['medicareNo'] = set()
 UsedIDs['IHI'] = set()
 UsedIDs['dvaNo'] = set()
 UsedIDs['crnNo'] = set()
-mkRandPatients(intputDir, addressFile, numPatients, extendNames, useShortStreetTypes, makeRandom, minAge, maxAge, UsedIDs, addUR)
+mkRandPatients(inputDir, addressFile, numPatients, extendNames, useShortStreetTypes, makeRandom, minAge, maxAge, mkFamilies, UsedIDs, addUR)
 
 import random
 
@@ -97,6 +102,9 @@ IHI = patients[key]['IHI']
 dvaNo = patients[key]['dvaNo']
 dvaType = patients[key]['dvaType']
 crnNo = patients[key]['crnNo']
+PEN = patients[key]['PEN']
+SEN = patients[key]['SEN']
+HC = patients[key]['HC']
 married = patients[key]['married']
 race = patients[key]['race']
 height = patients[key]['height']
@@ -109,7 +117,7 @@ LIST = patients[key]['LIST']
 
 
 For databases and files a list of patient data can be accessed as patients[key]['LIST']. The list is assembled in the following order
-title,familyName,givenName,birthdate,sex,streetNo,streetName,streetType,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,mobile,homePhone,businessPhone,email,medicareNo,IHI,dvaNo,dvaType,crnNo,height,weight,waist,hips,married,race
+title,familyName,givenName,birthdate,sex,streetNo,streetName,streetType,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,mobile,homePhone,businessPhone,email,medicareNo,IHI,dvaNo,dvaType,crnNo,SN,HC,height,weight,waist,hips,married,race
 
 For LIS2 (was ASTM E1394-97) messages the formatted patient data can be accessed as patients[key]['LIS2'].
 The formatted data contains many of the fields in the 'P' record; namely field 1 - Record Type ('P'), fields - 2 Sequence Number (1),
@@ -321,10 +329,6 @@ Read in Australian Address from the G-NAF CORE data in the addressFile
             count += 1
             if (count % 100000) == 0:
                 logging.info('%d addresses read in', count)
-    if count < numPatients * 1.5:
-        logging.fatal('Insufficient addresses in %s', addressFile)
-        logging.shutdown()
-        sys.exit(EX_CONFIG)
     SA1list = list(SA1s)
     postcodesList = list(postcodes)
     streetNamesList = list(streetNames)
@@ -338,7 +342,7 @@ Read in as many real Australian family names as necessary, keeping a profile of 
 
     # Declare any globals to which we are going to do assignment!
 
-    profile = {}
+    profile = {}        # key: popularity, value: list of similar names
     # Surname,Count
     dialect = csv.excel
     with open(os.path.join(inputDir, 'AustralianSurnames.csv'), 'rt', newline='', encoding='utf-8') as csvfile:
@@ -352,8 +356,8 @@ Read in as many real Australian family names as necessary, keeping a profile of 
                 continue
             name = row[0]
             count = int(row[1])
-            count10 = int(count)/2000
-            total += count
+            count10 = int(count/200)       # Bucket into groups of similarly popular names
+            total += count                  # Total popularity (sample population)
             if count10 in profile:
                 profile[count10]['sum'] += count
                 profile[count10]['names'].append(name)
@@ -370,21 +374,18 @@ Read in as many real Australian family names as necessary, keeping a profile of 
         logging.shutdown()
         sys.exit(EX_CONFIG)
 
-    revProfile = {}
+    revProfile = {}             # key: count of bucket popularity, value: bucket key
     for count, values in profile.items():
         revProfile[values['sum']] = count
 
-    i = 0
     ttotal = total
-    for thisSum in reversed(sorted(revProfile.keys())):
+    for thisSum in reversed(sorted(revProfile.keys())):                     # total bucket popularity in decending order
         familyNames.append([])
-        familyNames[i].append(float(ttotal) / total)
-        familyNames[i].append([])
-        familyNames[i][1] = profile[revProfile[thisSum]]['names']
-        i += 1
+        familyNames[-1].append(float(ttotal) / total)                       # pareto fraction popularity (this bucket and all following as fraction of total)
+        familyNames[-1].append(profile[revProfile[thisSum]]['names'])       # The names for this pareto fraction
         ttotal -= thisSum
     familyNames.append([])
-    familyNames[i].append(0.0)
+    familyNames[-1].append(0.0)
     return
 
 
@@ -407,7 +408,7 @@ Read in as many real boys names as necessary, keeping a profile of popularity
                 continue
             name = row[0]
             count = int(row[1])
-            count10 = int(count)/2000
+            count10 = int(count/2000)
             total += count
             if count10 in profile:
                 profile[count10]['sum'] += count
@@ -421,17 +422,15 @@ Read in as many real boys names as necessary, keeping a profile of popularity
     for count, values in profile.items():
         revProfile[values['sum']] = count
 
-    i = 0
     ttotal = total
     for thisSum in reversed(sorted(revProfile.keys())):
         boysnames.append([])
-        boysnames[i].append(float(ttotal) / total)
-        boysnames[i].append([])
-        boysnames[i][1] = profile[revProfile[thisSum]]['names']
-        i += 1
+        boysnames[-1].append(float(ttotal) / total)
+        boysnames[-1].append([])
+        boysnames[-1][1] = profile[revProfile[thisSum]]['names']
         ttotal -= thisSum
     boysnames.append([])
-    boysnames[i].append(0.0)
+    boysnames[-1].append(0.0)
     return
 
 
@@ -454,7 +453,7 @@ Read in as many real girls names as necessary, keeping a profile of popularity
                 continue
             name = row[0]
             count = int(row[1])
-            count10 = int(count)/2000
+            count10 = int(count/2000)
             total += count
             if count10 in profile:
                 profile[count10]['sum'] += count
@@ -468,17 +467,15 @@ Read in as many real girls names as necessary, keeping a profile of popularity
     for count, values in profile.items():
         revProfile[values['sum']] = count
 
-    i = 0
     ttotal = total
     for thisSum in reversed(sorted(revProfile.keys())):
         girlsnames.append([])
-        girlsnames[i].append(float(ttotal) / total)
-        girlsnames[i].append([])
-        girlsnames[i][1] = profile[revProfile[thisSum]]['names']
-        i += 1
+        girlsnames[-1].append(float(ttotal) / total)
+        girlsnames[-1].append([])
+        girlsnames[-1][1] = profile[revProfile[thisSum]]['names']
         ttotal -= thisSum
     girlsnames.append([])
-    girlsnames[i].append(0.0)
+    girlsnames[-1].append(0.0)
     return
 
 
@@ -488,8 +485,10 @@ Randomly select a family name
     '''
 
     choice = random.random()
+    # logging.debug('Family name choice (%f)', choice)
     i = 0
     while familyNames[i + 1][0] > choice:
+        # logging.debug('Skipping pareto (%f), names (%s)', familyNames[i][0], familyNames[i][1])
         i += 1
     familyName = random.choice(familyNames[i][1])
     return familyName
@@ -551,7 +550,7 @@ def mkMedicareNo(medicardNo):
 
 
 
-def mkRandPatients(inputDir, addressFile, numPatients, extendNames, useShortStreetTypes, makeRandom, minAge, maxAge, UsedIDs, addUR):
+def mkRandPatients(inputDir, addressFile, numPatients, extendNames, useShortStreetTypes, makeRandom, minAge, maxAge, mkFamilies, UsedIDs, addUR):
 
     '''
 Make random Australian test patients. Randomly select a given name (51% female, 49% male) and randomly select a family name.
@@ -596,7 +595,7 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
     getGirlsnames(inputDir)
     getAustralianAddresses(inputDir, addressFile, numPatients)
 
-    # Set up any used identifiers
+    # Set up any used identifiers - NOTE: Safety Net and Healthcare Care numbers are just CentreLink Customer Reference numbers
     usedMedicareNo = set()
     usedIHIno = set()
     usedDVAno = set()
@@ -612,26 +611,64 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
             usedCRNno = UsedIDs['CRNno']
 
     logging.info('Creating %d demographic records', numPatients)
+    familySize = 0
+    sameFamilyName = False
+    needAddress = True
     for i in range(numPatients):
+        firstPass = True
+        passes = 0
         while True:    # Loop if the random patient name is not distinct
+            # logging.debug('mkFamilies: (%s), firstPass (%s)', mkFamilies, firstPass)
             if random.random() > 0.51:
                 givenName = selectGirlsname()
                 sex = 'F'
             else:
                 givenName = selectBoysname()
                 sex = 'M'
-            familyName = selectFamilyName()
+            if mkFamilies:
+                if firstPass:
+                    if familySize < 1:
+                        familySize = 1 + int(random.betavariate(2, 5)*6)
+                        familyName = selectFamilyName()
+                        # logging.debug('New family, family name (%s)', familyName)
+                        sameFamilyName = False
+                        needAddress = True
+                    elif random.random() < 0.1:
+                        familyName = selectFamilyName()
+                        # logging.debug('Same family, new family name (%s)', familyName)
+                        sameFamilyName = False
+                        needAddress = False
+                    else:
+                        sameFamilyName = True
+                        needAddress = False
+                firstPass = False
+            else:
+                familyName = selectFamilyName()
             me = givenName + '~' + familyName
             if me not in patients:
                 break
+            # logging.debug('duplicate name key:%s', me)
+            passes += 1
+            if (passes % 50) == 0:    # Try an different surname
+                if passes > 500: # Too may re-tryies
+                    logging.fatal('Not enough names to create different combinations')
+                    logging.shutdown()
+                    sys.exit(EX_CONFIG)
+                if mkFamilies:
+                    familyName = selectFamilyName()
+        if mkFamilies:
+            familySize -= 1
+        longGivenName = givenName
+        longFamilyName = familyName
         if extendNames:
             letter = random.randrange(25)
-            givenName += letters[letter:letter+2]
-            letter = random.randrange(25)
-            familyName += letters[letter:letter+2]
+            longGivenName = givenName + letters[letter:letter+2]
+            if not mkFamilies or not sameFamilyName:
+                letter = random.randrange(25)
+                longFamilyName = familyName + letters[letter:letter+2]
         patients[me] = {}
-        patients[me]['givenName'] = givenName.upper()
-        patients[me]['familyName'] = familyName.upper()
+        patients[me]['givenName'] = longGivenName.upper()
+        patients[me]['familyName'] = longFamilyName.upper()
         today = datetime.date.today()
         if maxAge > minAge:
             ageDays = random.randrange(minAge, maxAge) * 365
@@ -647,7 +684,10 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
             patients[me]['sex'] = sex
 
         # Create a random address - it does not need to be 'nearby'
-        thisAddr = mkRandAddress(None, False, makeRandom)
+        needPhone = False
+        if not mkFamilies or needAddress:
+            thisAddr = mkRandAddress(None, False, makeRandom)
+            needPhone = True
         patients[me]['streetNo'] = thisAddr['streetNo']
         patients[me]['streetName'] = thisAddr['streetName']
         patients[me]['streetType'] = thisAddr['streetType']
@@ -660,20 +700,26 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
         patients[me]['latitude'] = thisAddr['latitude']
         patients[me]['meshblock'] = thisAddr['meshblock']
         patients[me]['sa1'] = thisAddr['sa1']
-        patients[me]['mobile'] = '0491570' + random.choice(mobileSuffix)
-        if patients[me]['postcode'][0:1] == '7':
-            patients[me]['homePhone'] = '035550' + f'{random.randrange(10000):04d}'
-            patients[me]['businessPhone'] = '037010' + f'{random.randrange(10000):04d}'
-        elif patients[me]['postcode'][0:1] == '2':
-            patients[me]['homePhone'] = '025550' + f'{random.randrange(10000):04d}'
-            patients[me]['businessPhone'] = '027010' + f'{random.randrange(10000):04d}'
-        elif patients[me]['postcode'][0:1] == '6':
-            patients[me]['homePhone'] = '085550' + f'{random.randrange(10000):04d}'
-            patients[me]['businessPhone'] = '087010' + f'{random.randrange(10000):04d}'
+        if needPhone:
+            if patients[me]['postcode'][0:1] == '7':
+                patients[me]['homePhone'] = '035550' + f'{random.randrange(10000):04d}'
+                patients[me]['businessPhone'] = '037010' + f'{random.randrange(10000):04d}'
+            elif patients[me]['postcode'][0:1] == '2':
+                patients[me]['homePhone'] = '025550' + f'{random.randrange(10000):04d}'
+                patients[me]['businessPhone'] = '027010' + f'{random.randrange(10000):04d}'
+            elif patients[me]['postcode'][0:1] == '6':
+                patients[me]['homePhone'] = '085550' + f'{random.randrange(10000):04d}'
+                patients[me]['businessPhone'] = '087010' + f'{random.randrange(10000):04d}'
+            else:
+                patients[me]['homePhone'] = '075550' + f'{random.randrange(10000):04d}'
+                patients[me]['businessPhone'] = '077010' + f'{random.randrange(10000):04d}'
+            homePhone = patients[me]['homePhone']
+            businessPhone = patients[me]['businessPhone']
         else:
-            patients[me]['homePhone'] = '075550' + f'{random.randrange(10000):04d}'
-            patients[me]['businessPhone'] = '077010' + f'{random.randrange(10000):04d}'
-        patients[me]['email'] = givenName.lower() + '.' + familyName.lower() + '@his4ehr.com'
+            patients[me]['homePhone'] = homePhone
+            patients[me]['businessPhone'] = businessPhone
+        patients[me]['mobile'] = '0491570' + random.choice(mobileSuffix)
+        patients[me]['email'] = longGivenName.lower() + '.' + longFamilyName.lower() + '@his4ehr.com'
 
         while True:        # Loop if the medicareNo is not distinct
             medicareNo = patients[me]['postcode'][0:1]
@@ -715,18 +761,6 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
         else:
             patients[me]['dvaNo'] = None
             patients[me]['dvaType'] = None
-        percent = random.random() * 100
-        if percent < 40.0:
-            while True:        # Loop if the CRN no is not distinct
-                crnNo = random.randint(900000000, 999999999)
-                if crnNo not in usedCRNno:
-                    break
-            usedCRNno.add(crnNo)
-            crnNo = str(crnNo) + random.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-            patients[me]['crnNo'] = crnNo
-        else:
-            patients[me]['crnNo'] = None
-
         ageYears = today.year - birthdate.year    # Some things (height, weight, marrital status) are age dependant
         ageMonths = ageYears * 12
         if today.month < birthdate.month:
@@ -736,6 +770,27 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
                 ageMonths = ageMonths - 1
             if birthdate.month == 2 and birthdate.day == 29 and today.day == 28:
                 ageMonths = ageMonths + 1
+        percent = random.random() * 100
+        patients[me]['crnNo'] = None
+        patients[me]['PEN'] = None
+        patients[me]['SEN'] = None
+        patients[me]['HC'] = None
+        if percent < 30.0:          # 30% of Australians have an interaction with CentreLink
+            while True:        # Loop if the CRN no is not distinct
+                crnNo = random.randint(900000000, 999999999)
+                if crnNo not in usedCRNno:
+                    break
+            usedCRNno.add(crnNo)
+            crnNo = str(crnNo) + random.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+            patients[me]['crnNo'] = crnNo
+            percent = random.random() * 100
+            if ageMonths > (65 * 12):           # Seniors can have a pensiono or a senior's healthcare card
+                if percent < 60.0:              # 60% receive an aged care pension
+                    patients[me]['PEN'] = crnNo
+                elif percent < 90.0:            # Seniors who don't qualify for the pension do qualify for a senior's healthcare card
+                    patients[me]['SEN'] = crnNo
+            elif percent < 65.0:                # Non-seniors may qualify for a HealthCare concession card
+                patients[me]['HC'] = crnNo
         if ageMonths <= 960:
             if ageMonths <= 6:
                 idx = 0
@@ -823,12 +878,12 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
                 patients[me]['PID'] += '^DVO'
         if patients[me]['crnNo'] is not None:
             patients[me]['PID'] += '~' + patients[me]['crnNo'] + '^^^AUSLINK^AN'
-            percent = random.random() * 100
-            if percent > 30.0:
-                if ageMonths > (65 * 12):
-                    patients[me]['PID'] += '~' + patients[me]['crnNo'] + '^^^^SN'
-                else:
-                    patients[me]['PID'] += '~' + patients[me]['crnNo'] + '^^^^HC'
+            if patients[me]['PEN'] is not None:
+                patients[me]['PID'] += '~' + patients[me]['PEN'] + '^^^^PEN'
+            if patients[me]['SEN'] is not None:
+                patients[me]['PID'] += '~' + patients[me]['SEN'] + '^^^^SEN'
+            if patients[me]['HC'] is not None:
+                patients[me]['PID'] += '~' + patients[me]['HC'] + '^^^^HC'
         if addUR:
             # Add a template for a hospital UR number as an extra repetition
             patients[me]['PID'] += '~<UR>' + '^^^<AUTH>^MR'
@@ -895,6 +950,9 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
         dataList.append(patients[me]['dvaNo'])
         dataList.append(patients[me]['dvaType'])
         dataList.append(patients[me]['crnNo'])
+        dataList.append(patients[me]['PEN'])
+        dataList.append(patients[me]['SEN'])
+        dataList.append(patients[me]['HC'])
         dataList.append(patients[me]['height'])
         dataList.append(patients[me]['weight'])
         dataList.append(patients[me]['waist'])

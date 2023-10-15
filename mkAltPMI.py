@@ -498,7 +498,7 @@ The main code
     noOfPMIrecords = int(((endUR - startUR)/skipUR)*1.5)
 
     UsedIDs = {}
-    mkRandPatients(dataDir, addressFile, noOfPMIrecords, extendNames, False, makeRandom, minAge, maxAge, UsedIDs, False)        # Create enough random patient
+    mkRandPatients(dataDir, addressFile, noOfPMIrecords, extendNames, False, makeRandom, minAge, maxAge, False, UsedIDs, False)        # Create enough random patient
 
     # Now read in the master PMI file
     master = {}

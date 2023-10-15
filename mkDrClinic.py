@@ -242,7 +242,7 @@ The main code
         noOfRecords += noOfRecords * int(((maxPatients - minPatients)/2)*2)    # Plus number of patients per doctor, for each doctor, for each clinic
 
     UsedIDs = {}
-    mkRandPatients(dataDir, addressFile, noOfRecords, extendNames, False, makeRandom, minAge, maxAge, UsedIDs, False)        # Create enough random patient
+    mkRandPatients(dataDir, addressFile, noOfRecords, extendNames, False, makeRandom, minAge, maxAge, False, UsedIDs, False)        # Create enough random patient
 
     # Create the Clinic and Doctor records
     cCount = 0

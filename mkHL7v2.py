@@ -8,7 +8,7 @@ from an Excel spreadsheet of randomly created health networks, hospitals, clinic
 created by mkHealthPopulation.py
 
 SYNOPSIS
-$ python mkHL7v2.py [-I inputDir|--inputDir=inputDir] [-i inputFile|--inputFile=inputFile]
+$ python mkHL7v2.py [-I inputDir|--inputDir=inputDir] [-i inputfile|--inputfile=inputfile]
                     [-O outputDir|--outputDir=outputDir] [-o outputfile|--outputfile=outputfile]
                     [-v loggingLevel|--loggingLevel=loggingLevel]
                     [-L logDir|--logDir=logDir] [-l logfile|--logfile=logfile]
