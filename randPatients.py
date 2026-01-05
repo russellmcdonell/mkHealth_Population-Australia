@@ -896,10 +896,10 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
         else:
             patients[me]['PID'] += '|' + patients[me]['streetNo'] + ' ' + patients[me]['streetName'] + ' ' + patients[me]['streetType']
         patients[me]['PID'] += '^^' + patients[me]['suburb'] + '^' + patients[me]['state'] + '^' + patients[me]['postcode'] + '^AUS^M'                # PID-11 Patient Address
-        patients[me]['PID'] += '||' + '^PRN^PH^^^^^^' + patients[me]['homePhone']                        # PID-13 Phone number - Home, mobile, email
-        patients[me]['PID'] += '~^PRN^CP^^^^^^' + patients[me]['mobile']
+        patients[me]['PID'] += '||' + '^PRN^PH^^^' + patients[me]['homePhone'][0:2] + '^' + patients[me]['homePhone'][2:]                        # PID-13 Phone number - Home, mobile, email
+        patients[me]['PID'] += '~^PRN^CP^^^^' + patients[me]['mobile']
         patients[me]['PID'] += '~^NET^Internet^' + patients[me]['email']
-        patients[me]['PID'] += '|' + '^WPN^PH^^^^^^' + patients[me]['businessPhone']                        # PID-14 Phone number - Business
+        patients[me]['PID'] += '|' + '^WPN^PH^^^' + patients[me]['businessPhone'][0:2] + '^' + patients[me]['businessPhone'][2:]                        # PID-14 Phone number - Business
         patients[me]['PID'] += '||' + patients[me]['married']                                    # PID-16 Marital Status
         patients[me]['PID'] += '||||||||||||||N'                                         # PID-30 Patient Death Indicator
 

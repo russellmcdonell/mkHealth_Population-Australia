@@ -115,14 +115,15 @@ def mkPrescriberNo(prescriberNo):
     '''
     Add a check digit to a PBS prescriber number
     '''
-    cdigit = '0123456789'
+    cdigit = 'YXWTLKJHFBA'
     csum = 0
-    if prescriberNo[0] == '0':
-        csum = (int(prescriberNo[1]) * 5 + int(prescriberNo[2]) * 8 + int(prescriberNo[3]) * 4 + int(prescriberNo[4]) * 2 + int(prescriberNo[5])) % 11
-    else:
+    if (prescriberNo[0] == '0') and (len(prescriberNo) == 7):      # DHS issued Hospital Provider Number - 7 digits plus checksum letter
+        csum = (int(prescriberNo[1]) * 5 + int(prescriberNo[2]) * 8 + int(prescriberNo[3]) * 4 + int(prescriberNo[4]) * 2 + int(prescriberNo[5]) + int(prescriberNo[6]) * 6) % 11
+        return prescriberNo + cdigit[csum]
+    else:                           # PBS Prescriber Number - 6 digits plus check sum number
         csum = int(prescriberNo[0]) + int(prescriberNo[1]) * 3 + int(prescriberNo[2]) * 7 + int(prescriberNo[3]) * 9 + int(prescriberNo[4]) + int(prescriberNo[5]) * 3
-    csum %= 10
-    return prescriberNo + cdigit[csum]
+        csum %= 10
+        return prescriberNo + f'{csum:d}'
 
 
 def createOrganization(orgRecord, HPIO, partOfHPIO, orgName, addr, organizationType):
@@ -249,18 +250,20 @@ def createOrganization(orgRecord, HPIO, partOfHPIO, orgName, addr, organizationT
             'name': orgName
         })
     organization_dict.update({
-        'telecom': [
-            {
-                'system': 'phone',
-                'value': rowData['businessPhone'],
-                'use': 'work'
-            }
-        ]
+        'name': orgName
     })
     if addr is None:
         organization_dict.update({
-            'address': [
+            'contact': [
                 {
+                'telecom': [
+                    {
+                        'system': 'phone',
+                        'value': rowData['businessPhone'],
+                        'use': 'work'
+                    }
+                ],
+                'address': {
                     'use': 'work',
                     'type': 'postal',
                     'text': rowData['streetNo'] + ' ' + rowData['streetName'] + ' ' + rowData['shortStreetType'] + ', ' + rowData['suburb'] + ', ' + rowData['state'] + '     ' + rowData['postcode'],
@@ -270,12 +273,19 @@ def createOrganization(orgRecord, HPIO, partOfHPIO, orgName, addr, organizationT
                     'postalCode': rowData['postcode'],
                     'country': rowData['country']
                 }
-            ]
+            }]
         })
     else:
         organization_dict.update({
-            'address': [
-                {
+            'contact': [{
+                'telecom': [
+                    {
+                        'system': 'phone',
+                        'value': rowData['businessPhone'],
+                        'use': 'work'
+                    }
+                ],
+                'address': {
                     'use': 'work',
                     'type': 'postal',
                     'text': addr['streetNo'] + ' ' + addr['streetName'] + ' ' + addr['shortStreetType'] + ', ' + addr['suburb'] + ', ' + addr['state'] + '     ' + addr['postcode'],
@@ -285,14 +295,14 @@ def createOrganization(orgRecord, HPIO, partOfHPIO, orgName, addr, organizationT
                     'postalCode': addr['postcode'],
                     'country': addr['country']
                 }
-            ]
+            }]
         })
     if partOfHPIO is not None:
         organization_dict.update({
             'partOf': { 'reference': 'Organization/' + partOfHPIO }
         })
 
-    organization = Organization.parse_obj(organization_dict)
+    organization = Organization.model_validate(organization_dict)
     try:
         organization_json = json.dumps(organization_dict)
     except Exception as e:
@@ -348,7 +358,7 @@ def createLocation(locRecord, HPIO, locName, addr, managingHPIO):
         location_dict.update({
             'managingOrganization': { 'reference': 'Organization/' + managingHPIO }
         })
-    location = Location.parse_obj(location_dict)
+    location = Location.model_validate(location_dict)
     try:
         location_json = json.dumps(location_dict)
     except Exception as e:
@@ -465,16 +475,20 @@ def createHealthcareService(serviceRecord, HPIO, serviceName, serviceType, servi
             }
         ],
         'name': serviceName,
-        'telecom': [
+        'contact': [
             {
-                'system': 'phone',
-                'value': rowData['businessPhone'],
-                'use': 'work'
+                'telecom': [
+                    {
+                    'system': 'phone',
+                    'value': rowData['businessPhone'],
+                    'use': 'work'
+                    }
+                ]
             }
         ]
     })
 
-    healthcareService = HealthcareService.parse_obj(healthcareService_dict)
+    healthcareService = HealthcareService.model_validate(healthcareService_dict)
     try:
         healthcareService_json = json.dumps(healthcareService_dict)
     except Exception as e:
@@ -589,7 +603,7 @@ def createPractitioner(pracRecord, HPIO, HPII, pracProviderNo, pracAhpraNo):
         'gender': sex,
         'birthDate': rowData['birthdate']
     }
-    practitioner = Practitioner.parse_obj(practitioner_dict)
+    practitioner = Practitioner.model_validate(practitioner_dict)
     try:
         practitioner_json = json.dumps(practitioner_dict)
     except Exception as e:
@@ -653,20 +667,30 @@ def createPractitionerRole(roleRecord, HPII, HPIO, roleRole, rolespecialty):
                 ]
             }
         ],
-        'telecom': [
-            {'system': 'phone',
-            'value': rowData['businessPhone'],
-            'use': 'work'},
-            {'system': 'phone',
-            'value': rowData['mobile'],
-            'use': 'mobile'},
-            {'system': 'email',
-            'value': rowData['email'],
-            'use': 'work'}
+        'contact': [
+            {
+                'telecom': [
+                    {
+                        'system': 'phone',
+                        'value': rowData['businessPhone'],
+                        'use': 'work'
+                    },
+                    {
+                        'system': 'phone',
+                        'value': rowData['mobile'],
+                        'use': 'mobile'
+                    },
+                    {
+                        'system': 'email',
+                        'value': rowData['email'],
+                        'use': 'work'
+                    }
+                ]
+            }
         ]
     }
 
-    practitionerRole = PractitionerRole.parse_obj(practitionerRole_dict)
+    practitionerRole = PractitionerRole.model_validate(practitionerRole_dict)
     try:
         practitionerRole_json = json.dumps(practitionerRole_dict)
     except Exception as e:
@@ -722,7 +746,7 @@ def createCareTeam(teamRecord, teamIHI, HPIO):
         ]
     })
 
-    careteam = CareTeam.parse_obj(careteam_dict)
+    careteam = CareTeam.model_validate(careteam_dict)
     try:
         careteam_json = json.dumps(careteam_dict)
     except Exception as e:
@@ -955,7 +979,7 @@ def createPatient(patientRecord, patientIHI, patientGPs):
             'reference': 'PractitionerRole/' + GP 
         })
 
-    patient = Patient.parse_obj(patient_dict)
+    patient = Patient.model_validate(patient_dict)
     try:
         patient_json = json.dumps(patient_dict)
     except Exception as e:
@@ -1043,6 +1067,7 @@ The main code
     # Then read in the configuration from mkHealthPopulation.cfg
     config = configparser.ConfigParser(allow_no_value=True)
     config.optionxform = str
+    maxDepartments = 0
     try:
         config.read(os.path.join(outputDir, 'mkHealthPopulation.cfg'))
         minNetworks = config.getint('Networks', 'minNetworks')
@@ -1060,9 +1085,13 @@ The main code
         for row in csv.reader([config.get('AssociatedHospitals', 'hospitalPostcodes')], csv.excel):
             hospitals['associated']['hospitalPostcodes'] = row
             break
-        for row in csv.reader([config.get('AssociatedHospitals', 'departments')], csv.excel):
-            hospitals['associated']['departments'] = row
-            break
+        for name in hospitals['associated']['hospitalNames']:
+            hospitals['associated'][name] = {}
+            for row in csv.reader([config.get('AssociatedHospitals', name +' departments')], csv.excel):
+                hospitals['associated'][name]['departments'] = row
+                if len(row) > maxDepartments:
+                    maxDepartments = len(row)
+                break
         hospitals['associated']['minSpecialists'] = config.getint('AssociatedHospitals', 'minSpecialists')
         hospitals['associated']['maxSpecialists'] = config.getint('AssociatedHospitals', 'maxSpecialists') + 1
         hospitals['associated']['minNurses'] = config.getint('AssociatedHospitals', 'minNurses')
@@ -1070,16 +1099,19 @@ The main code
         hospitals['private'] = {}
         hospitals['private']['minHospitals'] = config.getint('PrivateHospitals', 'minHospitals')
         hospitals['private']['maxHospitals'] = config.getint('PrivateHospitals', 'maxHospitals') + 1
-        hospitals['private']['departments'] = config.get('PrivateHospitals', 'departments')
         for row in csv.reader([config.get('PrivateHospitals', 'hospitalNames')], csv.excel):
             hospitals['private']['hospitalNames'] = row
             break
         for row in csv.reader([config.get('PrivateHospitals', 'hospitalPostcodes')], csv.excel):
             hospitals['private']['hospitalPostcodes'] = row
             break
-        for row in csv.reader([config.get('PrivateHospitals', 'departments')], csv.excel):
-            hospitals['private']['departments'] = row
-            break
+        for name in hospitals['private']['hospitalNames']:
+            hospitals['private'][name] = {}
+            for row in csv.reader([config.get('PrivateHospitals', name + ' departments')], csv.excel):
+                hospitals['private'][name]['departments'] = row
+                if len(row) > maxDepartments:
+                    maxDepartments = len(row)
+                break
         hospitals['private']['minSpecialists'] = config.getint('PrivateHospitals', 'minSpecialists')
         hospitals['private']['maxSpecialists'] = config.getint('PrivateHospitals', 'maxSpecialists') + 1
         hospitals['private']['minNurses'] = config.getint('PrivateHospitals', 'minNurses')
@@ -1109,38 +1141,102 @@ The main code
         HealthcareRoles = dict(config['HealthcareRoles'])
 
         addressFields = config.get('Fields', 'addressFields')
+        addressFieldNames = config.get('Fields', 'addressFieldNames')
         networkFields = config.get('Fields', 'networkFields')
+        networkFieldNames = config.get('Fields', 'networkFieldNames')
         hospitalFields = config.get('Fields', 'hospitalFields')
+        hospitalFieldNames = config.get('Fields', 'hospitalFieldNames')
         departmentFields = config.get('Fields', 'departmentFields')
+        departmentFieldNames = config.get('Fields', 'departmentFieldNames')
         clinicFields = config.get('Fields', 'clinicFields')
+        clinicFieldNames = config.get('Fields', 'clinicFieldNames')
         drFields = config.get('Fields', 'drFields')
+        drFieldNames = config.get('Fields', 'drFieldNames')
         patientFields1 = config.get('Fields', 'patientFields1')
+        patientFields1Names = config.get('Fields', 'patientFields1Names')
         patientFields2 = config.get('Fields', 'patientFields2')
+        patientFields2Names = config.get('Fields', 'patientFields2Names')
 
         for row in csv.reader([addressFields], csv.excel):
             addressFields = row
             break
+        for row in csv.reader([addressFieldNames], csv.excel):
+            addressFieldNames = row
+            break
+        if len(addressFields) != len(addressFieldNames):
+            logging.fatal('Incorrect number of addressFieldNames for addressFields')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
         for row in csv.reader([networkFields], csv.excel):
             networkFields = row
             break
+        for row in csv.reader([networkFieldNames], csv.excel):
+            networkFieldNames = row
+            break
+        if len(networkFields) != len(networkFieldNames):
+            logging.fatal('Incorrect number of networkFieldName for networkFields')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
         for row in csv.reader([hospitalFields], csv.excel):
             hospitalFields = row
             break
+        for row in csv.reader([hospitalFieldNames], csv.excel):
+            hospitalFieldNames = row
+            break
+        if len(hospitalFields) != len(hospitalFieldNames):
+            logging.fatal('Incorrect number of hospitalFieldName for hospitalFields')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
         for row in csv.reader([departmentFields], csv.excel):
             departmentFields = row
             break
+        for row in csv.reader([departmentFieldNames], csv.excel):
+            departmentFieldNames = row
+            break
+        if len(departmentFields) != len(departmentFieldNames):
+            logging.fatal('Incorrect number of departmentFieldName for departmentFields')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
         for row in csv.reader([clinicFields], csv.excel):
             clinicFields = row
             break
+        for row in csv.reader([clinicFieldNames], csv.excel):
+            clinicFieldNames = row
+            break
+        if len(clinicFields) != len(clinicFieldNames):
+            logging.fatal('Incorrect number of clinicFieldName for clinicFields')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
         for row in csv.reader([drFields], csv.excel):
             drFields = row
             break
+        for row in csv.reader([drFieldNames], csv.excel):
+            drFieldNames = row
+            break
+        if len(drFields) != len(drFieldNames):
+            logging.fatal('Incorrect number of drFieldName for drFields')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
         for row in csv.reader([patientFields1], csv.excel):
             patientFields1 = row
             break
+        for row in csv.reader([patientFields1Names], csv.excel):
+            patientFields1Names = row
+            break
+        if len(patientFields1) != len(patientFields1Names):
+            logging.fatal('Incorrect number of patientFields1Names for patientFields1')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
         for row in csv.reader([patientFields2], csv.excel):
             patientFields2 = row
             break
+        for row in csv.reader([patientFields2Names], csv.excel):
+            patientFields2Names = row
+            break
+        if len(patientFields2) != len(patientFields2Names):
+            logging.fatal('Incorrect number of patientFields2Names for patientFields2')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
     except (configparser.MissingSectionHeaderError, configparser.NoSectionError,
             configparser.NoOptionError, configparser.ParsingError) as detail:
         logging.fatal('%s', detail)
@@ -1151,7 +1247,6 @@ The main code
     noOfRecords = noOfNetworks
     maxHospitals = max(hospitals['associated']['maxHospitals'], hospitals['private']['maxHospitals'])
     noOfRecords += maxHospitals * 2
-    maxDepartments = max(len(hospitals['associated']['departments']), len(hospitals['private']['departments']))
     noOfRecords += maxHospitals * maxDepartments * 2
     maxSpecialists = max(hospitals['associated']['maxSpecialists'], hospitals['private']['maxSpecialists'])
     maxNurses = max(hospitals['associated']['maxNurses'], hospitals['private']['maxNurses'])
@@ -1176,45 +1271,40 @@ The main code
     wb = Workbook()
     healthNetworks = wb.active
     healthNetworks.title = 'Health Networks'
-    healthNetworks.append(['network_HPI-O', 'networkName', 'authority', 'streetNo', 'streetName', 'shortStreetType',
-                           'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
+    healthNetworks.append(['Network HPI-O', 'Network Name', 'authority'] + addressFieldNames + networkFieldNames)
+
     publicHospitals = wb.create_sheet('Public Hospitals')
-    publicHospitals.append(['network_HPI-O', 'hospital_HPI-O', 'hospitalName', 'streetNo', 'streetName', 'shortStreetType',
-                            'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
+    publicHospitals.append(['Network HPI-O', 'Hospital HPI-O', 'Hospital Name'] + addressFieldNames + hospitalFieldNames)
     publicHospitalDepartments = wb.create_sheet('Public Hospital Departments')
-    publicHospitalDepartments.append(
-        ['hospital_HPI-O', 'department_HPI-O', 'departmentName', 'application', 'departmentSpecialty', 'specialtyDescription', 'businessPhone'])
+    publicHospitalDepartments.append(['Hospital HPI-O', 'Department HPI-O', 'Department Name', 'application', 'Department Specialty', 'SpecialtyD escription'] + hospitalFieldNames)
     publicHospitalStaff = wb.create_sheet('Public Hospital Staff')
-    publicHospitalStaff.append(['department_HPI-O', 'staffSpecialty', 'specialtyDescription', 'role', 'roleDescription', 'HPI-I',
-                                'providerNo', 'prescriberNo', 'ahpraNo', 'title', 'familyName', 'givenName', 'birthdate', 'sex', 'workMobile', 'businessPhone', 'workEmail'])
+    publicHospitalStaff.append(['Department HPI-O', 'Staff Specialty', 'Specialty Description', 'Role', 'Role Description', 'HPI-I',
+                                'Provider No', 'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
 
     privateHospitals = wb.create_sheet('Private Hospitals')
-    privateHospitals.append(['hospital_HPI-O', 'hospitalName', 'authority', 'streetNo', 'streetName', 'shortStreetType',
-                             'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
+    privateHospitals.append(['Hospital HPI-O', 'Hospital Name', 'authority'] + addressFieldNames + hospitalFieldNames)
     privateHospitalDepartments = wb.create_sheet('Private Hospital Departments')
-    privateHospitalDepartments.append(['hospital_HPI-O', 'department_HPI-O', 'departmentName', 'application', 'departmentSpecialty', 'specialtyDescription', 'businessPhone'])
+    privateHospitalDepartments.append(['Hospital HPI-O', 'Department HPI-O', 'Department Name', 'application', 'Department Specialty', 'Specialty Description'] + hospitalFieldNames)
     privateHospitalStaff = wb.create_sheet('Private Hospital Staff')
-    privateHospitalStaff.append(['department_HPI-O', 'staffSpecialty', 'specialtyDescription', 'role', 'roleDescription', 'HPI-I',
-                                 'providerNo', 'prescriberNo', 'ahpraNo', 'title', 'familyName', 'givenName', 'birthdate', 'sex', 'workMobile', 'businessPhone', 'workEmail'])
+    privateHospitalStaff.append(['Department HPI-O', 'Staff Specialty', 'Specialty Description', 'Role', 'Role Description', 'HPI-I',
+                                 'Provider No', 'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
 
     clinics = wb.create_sheet('GP Clinics')
-    clinics.append(['clinic_HPI-O', 'clinicName', 'authority', 'application', 'clinicSpecialty', 'specialtyDescription', 'streetNo', 'streetName', 'shortStreetType',
-                    'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
+    clinics.append(['Clinic HPI-O', 'Clinic Name', 'authority', 'application', 'Clinic Specialty', 'Specialty Description'] + addressFieldNames + clinicFieldNames)
     clinicStaff = wb.create_sheet('GP Clinic Staff')
-    clinicStaff.append(['clinic_HPI-O', 'staffSpecialty', 'specialtyDescription', 'role', 'roleDescription', 'HPI-I', 'providerNo',
-                        'prescriberNo', 'ahpraNo', 'title', 'familyName', 'givenName', 'birthdate', 'sex', 'workMobile', 'businessPhone', 'workEmail'])
+    clinicStaff.append(['Clinic HPI-O', 'Staff Specialty', 'Specialty Description', 'Role', 'Role Description', 'HPI-I', 'Provider No',
+                        'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
 
     specialistServices = wb.create_sheet('Specialist Services')
-    specialistServices.append(['specialistService_HPI-O', 'specialistServiceName', 'authority', 'application', 'serviceSpecialty', 'specialtyDescription', 'streetNo', 'streetName',
-                               'shortStreetType', 'suburb', 'state', 'postcode', 'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'businessPhone'])
+    specialistServices.append(['Specialist Service HPI-O', 'Specialist Service Name', 'authority', 'application', 'Service Specialty', 'Specialty Description'] + addressFieldNames + clinicFieldNames)
+
     specialists = wb.create_sheet('Specialists')
-    specialists.append(['specialistService_HPI-O', 'specialistSpecialty', 'specialtyDescription', 'role', 'roleDescription',
-                        'HPI-I', 'providerNo', 'prescriberNo', 'ahpraNo', 'title', 'familyName', 'givenName', 'birthdate', 'sex', 'workMobile', 'businessPhone', 'workEmail'])
+    specialists.append(['Specialist Service HPI-O', 'Specialist Specialty', 'Specialty Description', 'Role', 'Role Description',
+                        'HPI-I', 'Provider No', 'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
 
     if Patients:
         clinicPatients = wb.create_sheet('Patients')
-        clinicPatients.append(['clinic_HPI-O', 'GP_HPI-I', 'IHI', 'CentreLink', 'Pension', 'SeniorsHC', 'HealthCare', 'title', 'familyName', 'givenName', 'birthdate', 'sex', 'streetNo', 'streetName', 'shortStreetType', 'suburb', 'state', 'postcode',
-                               'longitude', 'latitude', 'meshblock', 'sa1', 'country', 'mobile', 'homePhone', 'businessPhone', 'email', 'medicareNo', 'dvaNo', 'dvaType', 'height', 'weight', 'waist', 'hips', 'married', 'race'])
+        clinicPatients.append(['Clinic HPI-O', 'GP HPI-I'] + patientFields1Names + addressFieldNames + patientFields2Names)
         HL7_PID = wb.create_sheet('HL7_PID')
         HL7_PID.append(['IHI', 'PID'])
         LIS2_P = wb.create_sheet('LIS2_P')
@@ -1341,7 +1431,7 @@ The main code
                         hospitalSA3 = thisSA3
                         break
                 if hospitalSA3 is None:
-                    logging.fatal('Hospital postcode (%s) not in address file', hsopitalPostcode)
+                    logging.fatal('Hospital postcode (%s) not in address file', hospitalPostcode)
                     logging.shutdown()
                     sys.exit(EX_CONFIG)
                 hospitals[hospital]['hospitalSA3'].append(hospitalSA3)
@@ -1361,9 +1451,9 @@ The main code
 
                 # Now create some departments and staff for this hospital
                 # department fields:hospital_HPI-O,department_HPI-O,departmentName,departmentSpecialty,specialtyDescription
-                noOfDepartments = random.randrange(2, len(hospitals[hospital]['departments']))
+                noOfDepartments = len(hospitals[hospital][hospitalName]['departments'])
                 for thisDepartment in range(noOfDepartments):
-                    department = hospitals[hospital]['departments'][thisDepartment]
+                    department = hospitals[hospital][hospitalName]['departments'][thisDepartment]
                     outputRow = []
                     outputRow.append(hospital_HPIO)
                     record += 1
@@ -1373,7 +1463,7 @@ The main code
                     deptHPIOs.add(department_HPIO)
                     outputRow.append(department_HPIO)
                     outputRow.append(department)
-                    if department in ['Emergency', 'Medical', 'Midwifery', 'Surgical', 'Paediatric', 'IntensiveCare']:
+                    if department in ['Emergency', 'Medical', 'Midwifery', 'Surgical', 'Paediatric', 'Intensive Care']:
                         outputRow.append('PAS')
                     else:
                         outputRow.append(department[:4].upper())
