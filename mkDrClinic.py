@@ -90,8 +90,8 @@ def mkProviderNo(thisProviderNo):
     csum = 0
     for i, weight in enumerate(weights):
         csum += int(thisProviderNo[i:i+1]) * weight
-        providerLoc = random.choice(range(len(providerLocation)))
-        csum += providerLoc * 6
+    providerLoc = random.choice(range(len(providerLocation)))
+    csum += providerLoc * 6
     csum %= 11
 
     return f'{providerNo}{providerLocation[providerLoc:providerLoc+1]}{csumChar[csum:csum+1]}'
