@@ -8,7 +8,8 @@ SYNOPSIS
     from randPatients import patients, patientKeys, mkRandPatients
 
     numPatients = 5000
-    extendNames = useShortStreetTypes = makeRandom = addUR = False
+    extendNames = 1
+    useShortStreetTypes = makeRandom = addUR = False
     inputDir = 'data/.'
     addressFile = 'GNAF_CORE.psv'
     minAge = 15
@@ -60,7 +61,8 @@ The data can be accessed as follows
 from randPatients import patients, patientKeys, mkRandPatients
 
 numPatients = 5000
-extendNames = useShortStreetTypes = makeRandom = addUR = False
+extendNames = 1
+useShortStreetTypes = makeRandom = addUR = False
 inputDir = 'data/.'
 addressFile = 'GNAF_CORE.psv'
 minAge = 15
@@ -555,7 +557,8 @@ def mkRandPatients(inputDir, addressFile, numPatients, extendNames, useShortStre
     '''
 Make random Australian test patients. Randomly select a given name (51% female, 49% male) and randomly select a family name.
 Check that this combination hasn't been used before and if it has, try again.
-If extendNames is True, then add two sequential letters to both given name and family name.
+If extendNames is 1, then add two sequential letters to both given name and family name.
+If extendNames is 2, then add three digits to both given name and family name.
 Next create a birthdate. There is no bias reflecting real population age distribution.
 There is an even number of people aged between 'minAge' and 'maxAge' years.
 The patient's sex code (M or F) is taken from the gender of the given name, except that 2% of males are reassigned to the sex code 'U'.
@@ -660,12 +663,17 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
             familySize -= 1
         longGivenName = givenName
         longFamilyName = familyName
-        if extendNames:
-            letter = random.randrange(25)
-            longGivenName = givenName + letters[letter:letter+2]
-            if not mkFamilies or not sameFamilyName:
+        if extendNames in [1, 2]:
+            if extendNames == 1:
                 letter = random.randrange(25)
-                longFamilyName = familyName + letters[letter:letter+2]
+                longGivenName = givenName + letters[letter:letter+2]
+                if not mkFamilies or not sameFamilyName:
+                    letter = random.randrange(25)
+                    longFamilyName = familyName + letters[letter:letter+2]
+            else:
+                longGivenName = givenName + f'{random.randrange(100):03d}'
+                if not mkFamilies or not sameFamilyName:
+                    longFamilyName = familyName + f'{random.randrange(100):03d}'
         patients[me] = {}
         patients[me]['givenName'] = longGivenName.upper()
         patients[me]['familyName'] = longFamilyName.upper()
@@ -719,7 +727,7 @@ Of the remaining patients, 51% as assigned 'M' for married, 32% assigned 'S' for
             patients[me]['homePhone'] = homePhone
             patients[me]['businessPhone'] = businessPhone
         patients[me]['mobile'] = '0491570' + random.choice(mobileSuffix)
-        patients[me]['email'] = longGivenName.lower() + '.' + longFamilyName.lower() + '@his4ehr.com'
+        patients[me]['email'] = longGivenName.lower().replace(' ', '') + '.' + longFamilyName.lower().replace(' ', '') + '@his4ehr.com'
 
         while True:        # Loop if the medicareNo is not distinct
             medicareNo = patients[me]['postcode'][0:1]

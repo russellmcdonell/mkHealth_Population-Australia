@@ -8,7 +8,7 @@ A script to create an Excel spreadsheet of randomly created health networks, hos
 SYNOPSIS
 $ python mkHealthPopulation.py [-D dataDir|--dataDir=dataDir] [-A addressFile|--addressFile=addressFile]
                                [-O outputDir|--outputDir=outputDir] [-o outputfile|--outputfile=outputfile]
-                               [-r|--makeRandom] [-P|--Patients] [-i|--IHI] [-x|--extendNames] [-a|--addUR]
+                               [-r|--makeRandom] [-P|--Patients] [-i|--IHI] [-x extendType|--extendNames=extendType] [-a|--addUR]
                                [-v loggingLevel|--loggingLevel=loggingLevel]
                                [-L logDir|--logDir=logDir] [-l logfile|--logfile=logfile]
 
@@ -23,11 +23,12 @@ The file of GNAF_CORE addresses (or subset) (default='GNAF_CORE.psv')
 The directory in which the output file will be created (default='output')
 [mkHealthPopulation.cfg will be read from this directory]
 
--o outputfile|--outfile=outputfile
-The output file to be created (default='clinicDoctors.csv')
+-o outputfile|--outputfile=outputfile
+The output file to be created (default='healthPopulation.xlsx')
 
 -r|--makeRandom
 Make up Australian addresses by random selection of street, suburb, state, postcode
+This will break any concept of patients living near their healthcare providers and the generated data will not reflect real-world geographic distributions.
 
 -P|--Patients
 Output Patients for each GP doctor
@@ -35,8 +36,8 @@ Output Patients for each GP doctor
 -i|--IHI
 Add Australian IHI number
 
--x|--extendName
-Extend names with sequential letters
+-x extendType|--extendNames=extendType
+Extend names with sequential letters (extendType==1) or 3 digit numbers (extendType==2)
 
 -a|--addUR
 Add a template for the UR number  in the PID and LIS2 segments
@@ -60,6 +61,7 @@ import configparser
 import random
 import json
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from fhir.resources.organization import Organization
 from fhir.resources.healthcareservice import HealthcareService
 from fhir.resources.location import Location
@@ -70,34 +72,35 @@ from fhir.resources.patient import Patient
 from randPatients import patients, patientKeys, mkRandPatients, mkRandAddress, mkLuhn, SA3postcodes, SA2inSA4, SA1s
 
 
-careTeams = {}        # The list of Practitioners in each Organization
-patientDetails = {}    # The patient details plus the list of GPs
 
 # This next section is plagurised from /usr/include/sysexits.h
-EX_OK = 0                # successful termination
-EX_WARN = 1                # non-fatal termination with warnings
+EX_OK = 0                   # successful termination
+EX_WARN = 1                 # non-fatal termination with warnings
 
-EX_USAGE = 64            # command line usage error
-EX_DATAERR = 65            # data format error
-EX_NOINPUT = 66            # cannot open input
-EX_NOUSER = 67            # addressee unknown
-EX_NOHOST = 68            # host name unknown
-EX_UNAVAILABLE = 69        # service unavailable
-EX_SOFTWARE = 70        # internal software error
-EX_OSERR = 71            # system error (e.g., can't fork)
-EX_OSFILE = 72            # critical OS file missing
-EX_CANTCREAT = 73        # can't create (user) output file
-EX_IOERR = 74            # input/output error
-EX_TEMPFAIL = 75        # temp failure; user is invited to retry
-EX_PROTOCOL = 76        # remote error in protocol
-EX_NOPERM = 77            # permission denied
-EX_CONFIG = 78            # configuration error
+EX_USAGE = 64               # command line usage error
+EX_DATAERR = 65             # data format error
+EX_NOINPUT = 66             # cannot open input
+EX_NOUSER = 67              # addressee unknown
+EX_NOHOST = 68              # host name unknown
+EX_UNAVAILABLE = 69         # service unavailable
+EX_SOFTWARE = 70            # internal software error
+EX_OSERR = 71               # system error (e.g., can't fork)
+EX_OSFILE = 72              # critical OS file missing
+EX_CANTCREAT = 73           # can't create (user) output file
+EX_IOERR = 74               # input/output error
+EX_TEMPFAIL = 75            # temp failure; user is invited to retry
+EX_PROTOCOL = 76            # remote error in protocol
+EX_NOPERM = 77              # permission denied
+EX_CONFIG = 78              # configuration error
 
 
 def mkProviderNo(thisProviderNo):
     '''
     Add a provider location and checksum to a provider number
     '''
+
+    global usedProviderNo
+
     weights = [3, 5, 8, 4, 2, 1]
     providerLocation = '0123456789ABCDEFGHJKLMNPQRTUVWXY'
     csumChar = 'YXWTLKJHFBA'
@@ -105,7 +108,7 @@ def mkProviderNo(thisProviderNo):
     csum = 0
     for i, weight in enumerate(weights):
         csum += int(thisProviderNo[i]) * weight
-    providerLoc = random.choice(range(len(providerLocation)))
+    providerLoc = usedProviderNo[thisProviderNo]
     csum += providerLoc * 6
     csum %= 11
     return f'{thisProviderNo}{providerLocation[providerLoc:providerLoc+1]}{csumChar[csum:csum+1]}'
@@ -510,17 +513,14 @@ def createHealthcareService(serviceRecord, HPIO, serviceName, serviceType, servi
 
 
 sexName = {'M': 'male', 'F': 'female', 'U': 'unknown'}
-def createPractitioner(pracRecord, HPIO, HPII, pracProviderNo, pracAhpraNo):
+def createPractitioner(pracRecord, HPII, pracProviderNos, pracPrescriberNo, pracAhpraNo):
     '''
     Create FHIR_Practitioner resource
     '''
 
-    logging.info('Creating Practitioner :%s', pracProviderNo)
+    logging.info('Creating Practitioner :%s', HPII)
 
     rowData = patients[patientKeys[pracRecord]]
-    if HPIO not in careTeams:
-        careTeams[HPIO] = set()
-    careTeams[HPIO].add(HPII)
     pracTitle = rowData['title']
     family = rowData['familyName']
     given = rowData['givenName']
@@ -553,34 +553,38 @@ def createPractitioner(pracRecord, HPIO, HPII, pracProviderNo, pracAhpraNo):
                     ],
                     'text': 'Prescriber Number'
                 },
-                'system': 'http://ns.electronichealth.net.au/id/medicare-provider-number',
-                'value': mkProviderNo(pracProviderNo)
-            },
-            {
-                'type': {
-                    'coding': [
-                        {'system': 'http://terminology.hl7.org/CodeSystem/v2-0203',
-                        'code': 'PRES',
-                        'display': 'Prescriber Number'}
-                    ],
-                    'text': 'Prescriber Number'
-                },
                 'system': 'http://ns.electronichealth.net.au/id/medicare-prescriber-number',
-                'value': mkPrescriberNo(pracProviderNo)
+                'value': mkPrescriberNo(pracPrescriberNo)
             },
             {
                 'type': {
                     'coding': [
                         {'system': 'http://terminology.hl7.org/CodeSystem/v2-0203',
-                        'code': 'PRES',
-                        'display': 'Prescriber Number'}
+                        'code': 'AHPRA',
+                        'display': 'Australian Health Practitioner Regulation Agency Registration Number'}
                     ],
-                    'text': 'Prescriber Number'
+                    'text': 'Ahpra Registration Number'
                 },
                 'system': 'http://hl7.or.au/id/ahpra-registration-number',
                 'value': 'MED' + str(pracAhpraNo)
             }
-        ],
+        ]
+    }
+    for providerNo in pracProviderNos:
+        practitioner_dict['identifier'].append({
+            'type': {
+                'coding': [
+                    {'system': 'http://terminology.hl7.org/CodeSystem/v2-0203',
+                    'code': 'UPIN',
+                    'display': 'Provider Number'}
+                ],
+                'text': 'Medicare Provider Number'
+            },
+            'system': 'http://ns.electronichealth.net.au/id/medicare-provider-number',
+            'value': providerNo
+                    
+            })
+    practitioner_dict.update({
         'active': True,
         'name': [
             {'use': 'official',
@@ -602,7 +606,7 @@ def createPractitioner(pracRecord, HPIO, HPII, pracProviderNo, pracAhpraNo):
         ],
         'gender': sex,
         'birthDate': rowData['birthdate']
-    }
+    })
     practitioner = Practitioner.model_validate(practitioner_dict)
     try:
         practitioner_json = json.dumps(practitioner_dict)
@@ -1000,6 +1004,253 @@ def createPatient(patientRecord, patientIHI, patientGPs):
     return patient_json
 
 
+def mkDepartments(networkHPIO, localHospitalHPIO, hospitalHPIO, thisAddr, hospitalName, privateHospitalName, isPublic):
+
+    global hospitals, deptHPIOs, patients, patientKeys, record, departmentSpecialties, Specialties, departmentFields
+    global publicHospitalDepartments, privateHospitalDepartments, FHIR_Organization, FHIR_HealthcareService
+    global localSpecialists, localNurses, localGPs, usedProviderNo, usedAhpraNo, publicHospialStaff, privateHospitalStafff
+    global HL7_PID, FHIR_Practitioner, FHIR_PractitionerRole, Roles
+
+    # Now create some departments and staff for this hospital
+    # department fields:hospital_HPI-O,department_HPI-O,departmentName,application,departmentSpecialty,specialtyDescription
+    outputRow = []
+    if isPublic:
+        noOfDepartments = len(hospitals[f'{networkName} hospitals'][hospitalName]['departments'])
+    else:
+        noOfDepartments = len(hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['departments'])
+    for thisDepartment in range(noOfDepartments):
+        if isPublic:
+            department = hospitals[f'{networkName} hospitals'][hospitalName]['departments'][thisDepartment]
+            outputRow = [networkHPIO, hospitalHPIO]
+        else:
+            department = hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['departments'][thisDepartment]
+            outputRow = [networkHPIO, localHospitalHPIO, hospitalHPIO]
+        record += 1
+        IHI = patients[patientKeys[record]]['IHI']
+        departmentHPIO = IHI[:5] + '2' + IHI[6:-1]
+        departmentHPIO = f'{departmentHPIO}{mkLuhn(departmentHPIO):d}'
+        deptHPIOs.add(departmentHPIO)
+        careTeams[departmentHPIO] = set()
+        outputRow.append(departmentHPIO)
+        outputRow.append(department)
+        if department in ['Emergency', 'Medical', 'Midwifery', 'Surgical', 'Paediatric', 'Intensive Care']:
+            outputRow.append('PAS')
+        else:
+            outputRow.append(department[:4].upper())
+        outputRow.append(departmentSpecialties[department])
+        outputRow.append(Specialties[departmentSpecialties[department]])
+        hospitalPhone = patients[patientKeys[record]]['businessPhone']
+        for field in departmentFields:
+            outputRow.append(patients[patientKeys[record]][field])
+        if isPublic:
+            publicHospitalDepartments.append(outputRow)
+        else:
+            privateHospitalDepartments.append(outputRow)
+        FHIR_Organization.append([departmentHPIO, createOrganization(record, departmentHPIO, hospitalHPIO, department, thisAddr, 'department')])
+        specialty = departmentSpecialties[department]
+        FHIR_HealthcareService.append([departmentHPIO, createHealthcareService(record, departmentHPIO, department + '@' + hospitalName, 'department', specialty)])
+
+        # Now create some staff
+        # staff fields:department_HPI-O,staffSpecialty,specialtyDescription,role,roleDescription,HPI-I,providerNo,prescriberNo,ahpraNo,title,familyName,givenName,birthdate,sex,workMobile,businessPhone,workEmail
+        if isPublic:
+            noOfHospitalSpecialists = random.randrange(hospitals[f'{networkName} hospitals'][hospitalName]['minSpecialists'], hospitals[f'{networkName} hospitals'][hospitalName]['maxSpecialists'])
+        else:
+            noOfHospitalSpecialists = random.randrange(hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['minSpecialists'], hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['maxSpecialists'])
+        deptSpecialists = set()
+        for thisHospitalSpecialist in range(noOfHospitalSpecialists):
+            outputRow = []
+            if isPublic:
+                outputRow = [networkHPIO, hospitalHPIO, departmentHPIO]
+            else:
+                outputRow = [networkHPIO, localHospitalHPIO, hospitalHPIO, departmentHPIO]
+            hospitalSpecialistHPII = None
+            providerNo = None
+            prescriberNo = None
+            ahpraNo = None
+            availableSpecialists = set(localSpecialists[localHospitalHPIO].keys()) - deptSpecialists
+            if (len(availableSpecialists) > 20) and (random.random() < 0.2):
+                thisRecord = random.choice(list(availableSpecialists))
+                hospitalSpecialistHPII = localSpecialists[localHospitalHPIO][thisRecord]['HPI-I']
+                providerNo = localSpecialists[localHospitalHPIO][thisRecord]['providerNo']
+                usedProviderNo[providerNo] += 1
+                if usedProviderNo[providerNo] == 30:
+                    providerNo = None
+                prescriberNo = localSpecialists[localHospitalHPIO][thisRecord]['prescriberNo']
+                ahpraNo = localSpecialists[localHospitalHPIO][thisRecord]['ahpraNo']
+            else:
+                record += 1
+                thisRecord = record
+                localSpecialists[localHospitalHPIO][thisRecord] = {}
+            deptSpecialists.add(thisRecord)
+            if hospitalSpecialistHPII is None:
+                IHI = patients[patientKeys[thisRecord]]['IHI']
+                hospitalSpecialistHPII = IHI[:5] + '1' + IHI[6:-1]
+                hospitalSpecialistHPII = f'{hospitalSpecialistHPII}{mkLuhn(hospitalSpecialistHPII):d}'
+                localSpecialists[localHospitalHPIO][thisRecord]['HPI-I'] = hospitalSpecialistHPII
+            if hospitalSpecialistHPII not in practitionerDetails:
+                practitionerDetails[hospitalSpecialistHPII] = {}
+                practitionerDetails[hospitalSpecialistHPII]['providerNos'] = []
+                practitionerDetails[hospitalSpecialistHPII]['record'] = thisRecord
+            careTeams[departmentHPIO].add(hospitalSpecialistHPII)
+            outputRow.append(hospitalSpecialistHPII)
+            outputRow.append(departmentSpecialties[department])
+            outputRow.append(Specialties[departmentSpecialties[department]])
+            role = departmentSpecialistRoles[department]
+            outputRow.append(role)
+            outputRow.append(Roles[role])
+            if providerNo is None:
+                while True:        # Loop if the providerNo is not distinct
+                    providerNo = f'{random.randint(100000, 999999):06d}'
+                    if providerNo not in usedProviderNo:
+                        break
+                    logging.debug('Searching for a free provider number for a hospital doctor')
+                usedProviderNo[providerNo] = 0
+                localSpecialists[localHospitalHPIO][thisRecord]['providerNo'] = providerNo
+            practitionerDetails[hospitalSpecialistHPII]['providerNos'].append(mkProviderNo(providerNo))
+            outputRow.append(mkProviderNo(providerNo))
+            if prescriberNo is None:
+                prescriberNo = mkPrescriberNo(providerNo)
+                localSpecialists[localHospitalHPIO][thisRecord]['prescriberNo'] = prescriberNo
+            if 'prescriberNo' not in practitionerDetails[hospitalSpecialistHPII]:
+                practitionerDetails[hospitalSpecialistHPII]['prescriberNo'] = prescriberNo
+            outputRow.append(prescriberNo)
+            if ahpraNo is None:
+                while True:        # Loop if the ahpraNo is not distinct
+                    ahpraNo = random.randint(9000000000, 9999999999)
+                    if ahpraNo not in usedAhpraNo:
+                        break
+                    logging.debug('Searching for a free AHPRA number for a hospital doctor')
+                localSpecialists[localHospitalHPIO][thisRecord]['ahpraNo'] = ahpraNo
+                usedAhpraNo.add(ahpraNo)
+            if 'ahpraNo' not in practitionerDetails[hospitalSpecialistHPII]:
+                practitionerDetails[hospitalSpecialistHPII]['ahpraNo'] = 'MED' + str(ahpraNo)
+            outputRow.append('MED' + str(ahpraNo))
+            outputRow.append('Dr.')
+            patients[patientKeys[thisRecord]]['businessPhone'] = hospitalPhone
+            for field in drFields:
+                outputRow.append(patients[patientKeys[thisRecord]][field])
+            if isPublic:
+                publicHospitalStaff.append(outputRow)
+            else:
+                privateHospitalStaff.append(outputRow)
+            PRD = 'PRD||' + patients[patientKeys[thisRecord]]['familyName'] + '^' + patients[patientKeys[thisRecord]]['givenName'] + '^^^DR^^L'            # PRD-2 Provider Name
+            PRD += '|' + thisAddr['streetNo'] + ' ' + thisAddr['streetName'] + ' ' + thisAddr['streetType']
+            PRD += '^^' + thisAddr['suburb'] + '^' + thisAddr['state'] + '^' + thisAddr['postcode'] + '^AUS^M'   # PRD-3 Provider Address
+            PRD += '||^PRN^PH^^^^^^' + patients[patientKeys[thisRecord]]['homePhone']
+            PRD += '~^PRN^CP^^^^^^' + patients[patientKeys[thisRecord]]['mobile']
+            PRD += '~^NET^Internet^' + patients[patientKeys[thisRecord]]['email']
+            PRD += '~^WPN^PH^^^^^^' + patients[patientKeys[thisRecord]]['businessPhone']            # PRD-5 home phone, mbile, email, business phone
+            PRD += '||' + mkProviderNo(providerNo) + '^AUSHICPR^UPIN'
+            PRD += '~' + prescriberNo + '^AUSHIC^NPI'                                 # PRD-7 Provider identifiers
+            PRDrow = []
+            PRDrow.append(hospitalSpecialistHPII)
+            PRDrow.append(PRD)
+            HL7_PRD.append(PRDrow)
+            # FHIR_Practitioner.append([hospitalSpecialistHPII, createPractitioner(thisRecord, departmentHPIO, hospitalSpecialistHPII, providerNo, ahpraNo)])
+            FHIR_PractitionerRole.append([hospitalSpecialistHPII, createPractitionerRole(thisRecord, departmentHPIO, hospitalSpecialistHPII, role, departmentSpecialties[department])])
+
+        outputRow = []
+        if isPublic:
+            noOfNurses = random.randrange(hospitals[f'{networkName} hospitals'][hospitalName]['minNurses'], hospitals[f'{networkName} hospitals'][hospitalName]['maxNurses'])
+            outputRow = [networkHPIO, hospitalHPIO, departmentHPIO]
+        else:
+            noOfNurses = random.randrange(hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['minNurses'], hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['maxNurses'])
+            outputRow = [networkHPIO, localHospitalHPIO, hospitalHPIO, departmentHPIO]
+        deptNurses = set()
+        for thisNurse in range(noOfNurses):
+            outputRow = []
+            if isPublic:
+                outputRow = [networkHPIO, hospitalHPIO, departmentHPIO]
+            else:
+                outputRow = [networkHPIO, localHospitalHPIO, hospitalHPIO, departmentHPIO]
+            nurseHPII = None
+            nurseProviderNo = None
+            nursePrescriberNo = None
+            nurseAHPRANo = None
+            availableNurses = set(localNurses[localHospitalHPIO].keys()) - deptNurses
+            if (len(availableNurses) > 20) and (random.random() < 0.2):
+                thisRecord = random.choice(list(availableNurses))
+                nurseHPII = localNurses[localHospitalHPIO][thisRecord]['nurseHPII']
+                nurseProviderNo = localNurses[localHospitalHPIO][thisRecord]['nurseProviderNo']
+                usedProviderNo[nurseProviderNo] += 1
+                if usedProviderNo[nurseProviderNo] == 30:
+                    usedProviderNo[nurseProviderNo] = None
+                nursePrescriberNo = localNurses[localHospitalHPIO][thisRecord]['nursePrescriberNo']
+            else:
+                record += 1
+                thisRecord = record
+                localNurses[localHospitalHPIO][thisRecord] = {}
+            deptNurses.add(thisRecord)
+            if nurseHPII is None:
+                IHI = patients[patientKeys[thisRecord]]['IHI']
+                nurseHPII = IHI[:5] + '1' + IHI[6:-1]
+                nurseHPII = f'{nurseHPII}{mkLuhn(nurseHPII):d}'
+                localNurses[localHospitalHPIO][thisRecord]['nurseHPII'] = nurseHPII
+            if nurseHPII not in practitionerDetails:
+                practitionerDetails[nurseHPII] = {}
+                practitionerDetails[nurseHPII]['providerNos'] = []
+                practitionerDetails[nurseHPII]['record'] = thisRecord
+            careTeams[departmentHPIO].add(nurseHPII)
+            outputRow.append(nurseHPII)
+            outputRow.append(departmentSpecialties[department])
+            outputRow.append(Specialties[departmentSpecialties[department]])
+            role = '106292003'     # Nurse
+            outputRow.append(role)
+            outputRow.append(Roles[role])
+            if nurseProviderNo is None:
+                while True:        # Loop if the providerNo is not distinct
+                    nurseProviderNo = f'{random.randint(100000, 999999):06d}'
+                    if nurseProviderNo not in usedProviderNo:
+                        break
+                    logging.debug('Searching for a free provider number for a hospital nurse')
+                usedProviderNo[nurseProviderNo] = 0
+                localNurses[localHospitalHPIO][thisRecord]['nurseProviderNo'] = nurseProviderNo
+            practitionerDetails[nurseHPII]['providerNos'].append(mkProviderNo(nurseProviderNo))
+            outputRow.append(mkProviderNo(nurseProviderNo))
+            if nursePrescriberNo is None:
+                nursePrescriberNo = mkPrescriberNo(nurseProviderNo)
+                localNurses[localHospitalHPIO][thisRecord]['nursePrescriberNo'] = nursePrescriberNo
+            if 'prescriberNo' not in practitionerDetails[nurseHPII]:
+                practitionerDetails[nurseHPII]['prescriberNo'] = nursePrescriberNo
+            outputRow.append(nursePrescriberNo)
+            if nurseAHPRANo is None:
+                while True:        # Loop if the ahpraNo is not distinct
+                    ahpraNo = random.randint(9000000000, 9999999999)
+                    if ahpraNo not in usedAhpraNo:
+                        break
+                    logging.debug('Searching for a free AHPRA number for a hospital nurse')
+                usedAhpraNo.add(ahpraNo)
+                nurseAHPRANo = 'MED' + str(ahpraNo)
+                localNurses[localHospitalHPIO][thisRecord]['nurseAHPRANo'] = nurseAHPRANo
+            if 'ahpraNo' not in practitionerDetails[nurseHPII]:
+                practitionerDetails[nurseHPII]['ahpraNo'] = nurseAHPRANo
+            outputRow.append(nurseAHPRANo)
+            outputRow.append('Nrs.')
+            patients[patientKeys[thisRecord]]['businessPhone'] = hospitalPhone
+            for field in drFields:
+                outputRow.append(patients[patientKeys[thisRecord]][field])
+            if isPublic:
+                publicHospitalStaff.append(outputRow)
+            else:
+                privateHospitalStaff.append(outputRow)
+            PRD = 'PRD||' + patients[patientKeys[thisRecord]]['familyName'] + '^' + patients[patientKeys[thisRecord]]['givenName'] + '^^^DR^^L'            # PRD-2 Provider Name
+            PRD += '|' + thisAddr['streetNo'] + ' ' + thisAddr['streetName'] + ' ' + thisAddr['streetType']
+            PRD += '^^' + thisAddr['suburb'] + '^' + thisAddr['state'] + '^' + thisAddr['postcode'] + '^AUS^M'   # PRD-3 Provider Address
+            PRD += '||^PRN^PH^^^^^^' + patients[patientKeys[thisRecord]]['homePhone']
+            PRD += '~^PRN^CP^^^^^^' + patients[patientKeys[thisRecord]]['mobile']
+            PRD += '~^NET^Internet^' + patients[patientKeys[thisRecord]]['email']
+            PRD += '~^WPN^PH^^^^^^' + patients[patientKeys[thisRecord]]['businessPhone']            # PRD-5 home phone, mbile, email, business phone
+            PRD += '||' + mkProviderNo(nurseProviderNo) + '^AUSHICPR^UPIN'
+            PRD += '~' + nursePrescriberNo + '^AUSHIC^NPI'                                 # PRD-7 Provider identifiers
+            PRDrow = []
+            PRDrow.append(nurseHPII)
+            PRDrow.append(PRD)
+            HL7_PRD.append(PRDrow)
+            # FHIR_Practitioner.append([nurseHPII, createPractitioner(thisRecord, departmentHPIO, nurseHPII, nurseProviderNo, ahpraNo)])
+            FHIR_PractitionerRole.append([nurseHPII, createPractitionerRole(thisRecord, departmentHPIO, nurseHPII, role, departmentSpecialties[department])])
+    return
+
+
 if __name__ == '__main__':
     '''
 The main code
@@ -1024,8 +1275,8 @@ The main code
                         action='store_true', help='Output Patients for each doctor')
     parser.add_argument('-i', '--HPI', dest='HPI', action='store_true',
                         help='Add Australian HPI-I, providerNo, prescriberNo and HPI-O numbers')
-    parser.add_argument('-x', '--extendNames', dest='extendNames',
-                        action='store_true', help='Extend names with sequential letters')
+    parser.add_argument('-x', '--extendNames', dest='extendNames', type=int, choices=range(1, 3),
+                        help='Extend names with sequential letters (-x 1) or 3 digits (-x 2)')
     parser.add_argument('-a', '--addUR', dest='addUR',
                         action='store_true', help='Add a template for the UR number in PID and LIS2 segments')
     parser.add_argument('-v', '--verbose', dest='loggingLevel', type=int, choices=range(0, 5),
@@ -1075,51 +1326,61 @@ The main code
         for row in csv.reader([config.get('Networks', 'networkNames')], csv.excel):
             networkNames = row
             break
+        for row in csv.reader([config.get('Networks', 'postcodes')], csv.excel):
+            networkPostcodes = row
+            break
         hospitals = {}
-        hospitals['associated'] = {}
-        hospitals['associated']['minHospitals'] = config.getint('AssociatedHospitals', 'minHospitals')
-        hospitals['associated']['maxHospitals'] = config.getint('AssociatedHospitals', 'maxHospitals') + 1
-        for row in csv.reader([config.get('AssociatedHospitals', 'hospitalNames')], csv.excel):
-            hospitals['associated']['hospitalNames'] = row
-            break
-        for row in csv.reader([config.get('AssociatedHospitals', 'hospitalPostcodes')], csv.excel):
-            hospitals['associated']['hospitalPostcodes'] = row
-            break
-        for name in hospitals['associated']['hospitalNames']:
-            hospitals['associated'][name] = {}
-            for row in csv.reader([config.get('AssociatedHospitals', name +' departments')], csv.excel):
-                hospitals['associated'][name]['departments'] = row
-                if len(row) > maxDepartments:
-                    maxDepartments = len(row)
+        for networkName in networkNames:
+            hospitals[f'{networkName} hospitals'] = {}
+            hospitals[f'{networkName} private hospitals'] = {}
+            hospitals[f'{networkName} hospitals']['minHospitals'] = config.getint(f'{networkName} Hospitals', 'minHospitals')
+            hospitals[f'{networkName} hospitals']['maxHospitals'] = config.getint(f'{networkName} Hospitals', 'maxHospitals') + 1
+            for row in csv.reader([config.get(f'{networkName} Hospitals', 'hospitalNames')], csv.excel):
+                hospitals[f'{networkName} hospitals']['hospitalNames'] = row
                 break
-        hospitals['associated']['minSpecialists'] = config.getint('AssociatedHospitals', 'minSpecialists')
-        hospitals['associated']['maxSpecialists'] = config.getint('AssociatedHospitals', 'maxSpecialists') + 1
-        hospitals['associated']['minNurses'] = config.getint('AssociatedHospitals', 'minNurses')
-        hospitals['associated']['maxNurses'] = config.getint('AssociatedHospitals', 'maxNurses') + 1
-        hospitals['private'] = {}
-        hospitals['private']['minHospitals'] = config.getint('PrivateHospitals', 'minHospitals')
-        hospitals['private']['maxHospitals'] = config.getint('PrivateHospitals', 'maxHospitals') + 1
-        for row in csv.reader([config.get('PrivateHospitals', 'hospitalNames')], csv.excel):
-            hospitals['private']['hospitalNames'] = row
-            break
-        for row in csv.reader([config.get('PrivateHospitals', 'hospitalPostcodes')], csv.excel):
-            hospitals['private']['hospitalPostcodes'] = row
-            break
-        for name in hospitals['private']['hospitalNames']:
-            hospitals['private'][name] = {}
-            for row in csv.reader([config.get('PrivateHospitals', name + ' departments')], csv.excel):
-                hospitals['private'][name]['departments'] = row
-                if len(row) > maxDepartments:
-                    maxDepartments = len(row)
+            for row in csv.reader([config.get(f'{networkName} Hospitals', 'hospitalPostcodes')], csv.excel):
+                hospitals[f'{networkName} hospitals']['hospitalPostcodes'] = row
                 break
-        hospitals['private']['minSpecialists'] = config.getint('PrivateHospitals', 'minSpecialists')
-        hospitals['private']['maxSpecialists'] = config.getint('PrivateHospitals', 'maxSpecialists') + 1
-        hospitals['private']['minNurses'] = config.getint('PrivateHospitals', 'minNurses')
-        hospitals['private']['maxNurses'] = config.getint('PrivateHospitals', 'maxNurses') + 1
+            for hospitalName in hospitals[f'{networkName} hospitals']['hospitalNames']:
+                hospitals[f'{networkName} hospitals'][hospitalName] = {}
+                hospitals[f'{networkName} private hospitals'][hospitalName] = {}
+                for row in csv.reader([config.get(hospitalName, 'departments')], csv.excel):
+                    hospitals[f'{networkName} hospitals'][hospitalName]['departments'] = row
+                    if len(row) > maxDepartments:
+                        maxDepartments = len(row)
+                    break
+                hospitals[f'{networkName} hospitals'][hospitalName]['minSpecialists'] = config.getint(hospitalName, 'minSpecialists')
+                hospitals[f'{networkName} hospitals'][hospitalName]['maxSpecialists'] = config.getint(hospitalName, 'maxSpecialists') + 1
+                hospitals[f'{networkName} hospitals'][hospitalName]['minNurses'] = config.getint(hospitalName, 'minNurses')
+                hospitals[f'{networkName} hospitals'][hospitalName]['maxNurses'] = config.getint(hospitalName, 'maxNurses') + 1
+                hospitals[f'{networkName} hospitals'][hospitalName]['minPrivateHospitals'] = config.getint(hospitalName, 'minPrivateHospitals')
+                hospitals[f'{networkName} hospitals'][hospitalName]['maxPrivateHospitals'] = config.getint(hospitalName, 'maxPrivateHospitals') + 1
+                for row in csv.reader([config.get(hospitalName, 'privateHospitalNames')], csv.excel):
+                    hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalNames'] = row
+                    break
+                if hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalNames'] == ['none']:
+                    hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalNames'] = []
+                for row in csv.reader([config.get(hospitalName, 'privateHospitalPostcodes')], csv.excel):
+                    hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalPostcodes'] = row
+                    break
+                for privateHospitalName in hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalNames']:
+                    hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName] = {}
+                    for row in csv.reader([config.get(privateHospitalName, 'departments')], csv.excel):
+                        hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['departments'] = row
+                        if len(row) > maxDepartments:
+                            maxDepartments = len(row)
+                        break
+                    hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['minSpecialists'] = config.getint(privateHospitalName, 'minSpecialists')
+                    hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['maxSpecialists'] = config.getint(privateHospitalName, 'maxSpecialists') + 1
+                    hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['minNurses'] = config.getint(privateHospitalName, 'minNurses')
+                    hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['maxNurses'] = config.getint(privateHospitalName, 'maxNurses') + 1
+
+        minSpecialistServices = config.getint('SpecialistServices', 'minSpecialistServices')
+        maxSpecialistServices = config.getint('SpecialistServices', 'maxSpecialistServices') + 1
+        minSpecialists = config.getint('SpecialistServices', 'minSpecialists')
+        maxSpecialists = config.getint('SpecialistServices', 'maxSpecialists') + 1
         minClinics = config.getint('Clinics', 'minClinics')
         maxClinics = config.getint('Clinics', 'maxClinics') + 1
-        minConsultants = config.getint('Clinics', 'minConsultants')
-        maxConsultants = config.getint('Clinics', 'maxConsultants') + 1
         minDr = config.getint('Clinics', 'minDr')
         maxDr = config.getint('Clinics', 'maxDr') + 1
         minPatients = config.getint('Clinics', 'minPatients')
@@ -1128,7 +1389,7 @@ The main code
         maxAge = config.getint('Patients', 'maxAge') + 1
 
         departmentSpecialties = dict(config['DepartmentSpecialties'])
-        departmentSpecialist = dict(config['DepartmentSpecialist'])
+        departmentSpecialistRoles = dict(config['DepartmentSpecialistRoles'])
         departmentRoles = dict(config['DepartmentRoles'])
         GPspecialties = dict(config['GPspecialty'])
         SpecialistRoles = dict(config['SpecialistRoles'])
@@ -1245,100 +1506,156 @@ The main code
 
     noOfNetworks = random.randrange(minNetworks, maxNetworks)
     noOfRecords = noOfNetworks
-    maxHospitals = max(hospitals['associated']['maxHospitals'], hospitals['private']['maxHospitals'])
-    noOfRecords += maxHospitals * 2
-    noOfRecords += maxHospitals * maxDepartments * 2
-    maxSpecialists = max(hospitals['associated']['maxSpecialists'], hospitals['private']['maxSpecialists'])
-    maxNurses = max(hospitals['associated']['maxNurses'], hospitals['private']['maxNurses'])
-    noOfRecords += noOfNetworks * maxHospitals * maxDepartments * maxSpecialists * 2
-    noOfRecords += noOfNetworks * maxHospitals * maxDepartments * maxNurses * 2
-    noOfRecords += maxClinics
-    noOfRecords += maxClinics * maxConsultants * 2
-    noOfRecords += maxClinics * maxDr
+    maxPublicHospitals = 0
+    maxPrivateHospitals = 0
+    maxHospitalSpecialists = 0
+    maxHospitalNurses = 0
+    for thisNetwork in range(noOfNetworks):
+        networkName = networkNames[thisNetwork]
+        maxPublicHospitals = max(maxPublicHospitals, hospitals[f'{networkName} hospitals']['maxHospitals'])
+        for hospitalName in hospitals[f'{networkName} hospitals']['hospitalNames']:
+            maxPrivateHospitals = max(maxPrivateHospitals, hospitals[f'{networkName} hospitals'][hospitalName]['maxPrivateHospitals'])
+            maxHospitalSpecialists = max(maxHospitalSpecialists, hospitals[f'{networkName} hospitals'][hospitalName]['maxSpecialists'])
+            maxHospitalNurses = max(maxHospitalNurses, hospitals[f'{networkName} hospitals'][hospitalName]['maxNurses'])
+            for privateHospitalName in hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalNames']:
+                maxHospitalSpecialists = max(maxHospitalSpecialists, hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['maxSpecialists'])
+                maxHospitalNurses = max(maxHospitalNurses, hospitals[f'{networkName} private hospitals'][hospitalName][privateHospitalName]['maxNurses'])
+    maxHospitals = maxPublicHospitals + maxPrivateHospitals
+    noOfRecords += noOfNetworks * maxHospitals
+    noOfRecords += noOfNetworks * maxHospitals * maxDepartments
+    noOfRecords += noOfNetworks * maxHospitals * maxDepartments * maxHospitalSpecialists
+    noOfRecords += noOfNetworks * maxHospitals * maxDepartments * maxHospitalNurses
+    noOfRecords += noOfNetworks * maxPublicHospitals * maxSpecialistServices
+    noOfRecords += noOfNetworks * maxPublicHospitals * maxSpecialistServices * maxSpecialists
+    noOfRecords += noOfNetworks * maxPublicHospitals * maxClinics
+    noOfRecords += noOfNetworks * maxPublicHospitals * maxClinics * maxDr
 
     if Patients:
-        noOfRecords += maxClinics * maxDr * maxPatients
+        noOfRecords += noOfNetworks * maxPublicHospitals * maxClinics * maxDr * maxPatients
 
-    UsedIDs = {}
+    UsedIDs = {}                            # No IDs have been used yet
     # Make random patients with long street names
     logging.info('Creating %d demographic records', noOfRecords)
     mkRandPatients(dataDir, addressFile, noOfRecords, extendNames, False, makeRandom, minAge, maxAge, False, UsedIDs, addUR)        # Create enough random patient
 
 
-    # Create the Networks, hospitals, clinics, specialists, doctors (and patients if required)
-    usedProviderNo = {}
-    usedAhpraNo = set()
+    # Create the Networks, hospitals, clinics, specialists, doctors (and patients if required) worksheets
     wb = Workbook()
+    sheets = []
     healthNetworks = wb.active
     healthNetworks.title = 'Health Networks'
     healthNetworks.append(['Network HPI-O', 'Network Name', 'authority'] + addressFieldNames + networkFieldNames)
+    healthNetworks.freeze_panes = 'A2'
+    sheets.append('Health Networks')
 
     publicHospitals = wb.create_sheet('Public Hospitals')
     publicHospitals.append(['Network HPI-O', 'Hospital HPI-O', 'Hospital Name'] + addressFieldNames + hospitalFieldNames)
+    publicHospitals.freeze_panes = 'A2'
+    sheets.append('Public Hospitals')
     publicHospitalDepartments = wb.create_sheet('Public Hospital Departments')
-    publicHospitalDepartments.append(['Hospital HPI-O', 'Department HPI-O', 'Department Name', 'application', 'Department Specialty', 'SpecialtyD escription'] + hospitalFieldNames)
+    publicHospitalDepartments.append(['Network HPI-O', 'Hospital HPI-O', 'Department HPI-O', 'Department Name', 'application', 'Department Specialty', 'Specialty Description'] + hospitalFieldNames)
+    publicHospitalDepartments.freeze_panes = 'A2'
+    sheets.append('Public Hospital Departments')
     publicHospitalStaff = wb.create_sheet('Public Hospital Staff')
-    publicHospitalStaff.append(['Department HPI-O', 'Staff Specialty', 'Specialty Description', 'Role', 'Role Description', 'HPI-I',
+    publicHospitalStaff.append(['Network HPI-O', 'Hospital HPI-O', 'Department HPI-O',  'Hospital Staff HPI-I','Staff Specialty', 'Specialty Description', 'Role', 'Role Description',
                                 'Provider No', 'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
+    publicHospitalStaff.freeze_panes = 'A2'
+    sheets.append('Public Hospital Staff')
 
     privateHospitals = wb.create_sheet('Private Hospitals')
-    privateHospitals.append(['Hospital HPI-O', 'Hospital Name', 'authority'] + addressFieldNames + hospitalFieldNames)
+    privateHospitals.append(['Network HPI-O', 'Local Public Hospital HPI-O', 'Private Hospital HPI-O', 'Hospital Name', 'authority'] + addressFieldNames + hospitalFieldNames)
+    privateHospitals.freeze_panes = 'A2'
+    sheets.append('Private Hospitals')
     privateHospitalDepartments = wb.create_sheet('Private Hospital Departments')
-    privateHospitalDepartments.append(['Hospital HPI-O', 'Department HPI-O', 'Department Name', 'application', 'Department Specialty', 'Specialty Description'] + hospitalFieldNames)
+    privateHospitalDepartments.append(['Network HPI-O', 'Local Public Hospital HPI-O', 'Private Hospital HPI-O', 'Department HPI-O', 'Department Name', 'application', 'Department Specialty', 'Specialty Description'] + hospitalFieldNames)
+    privateHospitalDepartments.freeze_panes = 'A2'
+    sheets.append('Private Hospital Departments')
     privateHospitalStaff = wb.create_sheet('Private Hospital Staff')
-    privateHospitalStaff.append(['Department HPI-O', 'Staff Specialty', 'Specialty Description', 'Role', 'Role Description', 'HPI-I',
+    privateHospitalStaff.append(['Network HPI-O', 'Local Public Hospital HPI-O', 'Private Hospital HPI-O', 'Department HPI-O', 'Hospital Staff HPI-I', 'Staff Specialty', 'Specialty Description', 'Role', 'Role Description',
                                  'Provider No', 'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
-
-    clinics = wb.create_sheet('GP Clinics')
-    clinics.append(['Clinic HPI-O', 'Clinic Name', 'authority', 'application', 'Clinic Specialty', 'Specialty Description'] + addressFieldNames + clinicFieldNames)
-    clinicStaff = wb.create_sheet('GP Clinic Staff')
-    clinicStaff.append(['Clinic HPI-O', 'Staff Specialty', 'Specialty Description', 'Role', 'Role Description', 'HPI-I', 'Provider No',
-                        'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
+    privateHospitalStaff.freeze_panes = 'A2'
+    sheets.append('Private Hospital Staff')
 
     specialistServices = wb.create_sheet('Specialist Services')
-    specialistServices.append(['Specialist Service HPI-O', 'Specialist Service Name', 'authority', 'application', 'Service Specialty', 'Specialty Description'] + addressFieldNames + clinicFieldNames)
-
+    specialistServices.append(['Network HPI-O', 'Local Public Hospital HPI-O', 'Specialist Service HPI-O', 'Specialist Service Name', 'authority', 'application', 'Service Specialty', 'Specialty Description'] + addressFieldNames + clinicFieldNames)
+    specialistServices.freeze_panes = 'A2'
+    sheets.append('Specialist Services')
     specialists = wb.create_sheet('Specialists')
-    specialists.append(['Specialist Service HPI-O', 'Specialist Specialty', 'Specialty Description', 'Role', 'Role Description',
-                        'HPI-I', 'Provider No', 'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
+    specialists.append(['Network HPI-O', 'Local Public Hospital HPI-O', 'Specialist Service HPI-O', 'Specialist HPI-I', 'Specialist Specialty', 'Specialty Description', 'Role', 'Role Description',
+                        'Provider No', 'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
+    specialists.freeze_panes = 'A2'
+    sheets.append('Specialists')
+
+    gpClinics = wb.create_sheet('GP Clinics')
+    gpClinics.append(['Network HPI-O', 'Local Public Hospital HPI-O', 'GP Clinic HPI-O', 'Clinic Name', 'authority', 'application', 'Clinic Specialty', 'Specialty Description'] + addressFieldNames + clinicFieldNames)
+    gpClinics.freeze_panes = 'A2'
+    sheets.append('GP Clinics')
+    gpClinicStaff = wb.create_sheet('GP Clinic Staff')
+    gpClinicStaff.append(['Network HPI-O', 'Local Public Hospital HPI-O', 'GP Clinic HPI-O', 'GP HPI-I', 'Staff Specialty', 'Specialty Description', 'Role', 'Role Description', 'Provider No',
+                        'Prescriber No', 'AHPRA No', 'Title'] + drFieldNames)
+    gpClinicStaff.freeze_panes = 'A2'
+    sheets.append('GP Clinic Staff')
 
     if Patients:
         clinicPatients = wb.create_sheet('Patients')
-        clinicPatients.append(['Clinic HPI-O', 'GP HPI-I'] + patientFields1Names + addressFieldNames + patientFields2Names)
+        clinicPatients.append(['Network HPI-O', 'Local Public Hospital HPI-O', 'GP Clinic HPI-O', 'GP HPI-I', 'Patient IHI'] + patientFields1Names + addressFieldNames + patientFields2Names)
+        clinicPatients.freeze_panes = 'A2'
+        sheets.append('Patients')
         HL7_PID = wb.create_sheet('HL7_PID')
         HL7_PID.append(['IHI', 'PID'])
+        HL7_PID.freeze_panes = 'A2'
         LIS2_P = wb.create_sheet('LIS2_P')
         LIS2_P.append(['IHI', 'P'])
+        LIS2_P.freeze_panes = 'A2'
 
     HL7_PRD = wb.create_sheet('HL7_PRD')
     HL7_PRD.append(['HPI-I', 'PRD'])
+    HL7_PRD.freeze_panes = 'A2'
 
     FHIR_Organization = wb.create_sheet('FHIR_Organization')
     FHIR_Organization.append(['HPI-O', 'Organization'])
+    FHIR_Organization.freeze_panes = 'A2'
     FHIR_HealthcareService = wb.create_sheet('FHIR_HealthcareService')
     FHIR_HealthcareService.append(['HPI-O', 'HealthcareService'])
+    FHIR_HealthcareService.freeze_panes = 'A2'
     FHIR_Location = wb.create_sheet('FHIR_Location')
     FHIR_Location.append(['HPI-O', 'Location'])
+    FHIR_Location.freeze_panes = 'A2'
     FHIR_Practitioner = wb.create_sheet('FHIR_Practitioner')
     FHIR_Practitioner.append(['HPI-I', 'Practitioner'])
+    FHIR_Practitioner.freeze_panes = 'A2'
     FHIR_PractitionerRole = wb.create_sheet('FHIR_PractitionerRole')
     FHIR_PractitionerRole.append(['HPI-I', 'PractitionerRole'])
+    FHIR_PractitionerRole.freeze_panes = 'A2'
     FHIR_CareTeam = wb.create_sheet('FHIR_CareTeam')
     FHIR_CareTeam.append(['IHI', 'HPI-O', 'CareTeam'])
+    FHIR_CareTeam.freeze_panes = 'A2'
     if Patients:
         FHIR_Patient = wb.create_sheet('FHIR_Patient')
         FHIR_Patient.append(['IHI', 'Patient'])
+        FHIR_Patient.freeze_panes = 'A2'
 
     record = 0
-    publicHospitalNo = 0
-    privateHospitalNo = 0
-    usedSpecServiceNames = set()
-    usedClinicNames = set()
-    usedPubDrHPIO = set()
-    usedPrivDrHPIO = set()
-    usedNrsHPIO = set()
-    usedIHI = set()
-    deptHPIOs = set()
+    usedProviderNo = {}                     # Provider numbers that have been used  - cannot reuse them (location character can be different)
+    usedAhpraNo = set()                     # AHPRA numbers that have been used - cannot reuse them
+    usedIHI = set()                         # IHI that have already been used - can be reuse
+    usedSpecServiceNames = set()            # Specialist Service Names that have already been used - cannot reuse
+    usedGPclinicNames = set()               # GP Clinic Names that have already been used - cannot reuse
+
+    localSpecialists = {}                   # Doctors who can work in Public Hospitals, Private Hospitals, and Specialist Clinics, but must be local
+                                            # HPI-I and AHPRA numbers must be preserved, but Medicare Provider number must be different for each setting
+    localNurses = {}                        # Nurses who can work in Public Hospitals and Private Hospitals, but must be local
+    localGPs = {}                           # GPs who can work in multiple GP Clinics, but must be local
+    localPatients = {}                      # Patients who can be associated with multiple GP Clinics/GPs, but must be local
+
+    usedPubDrHPIO = set()                   # Public Doctor HPI-O that have already been used - can reuse
+    usedPrivDrHPIO = set()                  # Private Doctor HPI-O that have already been used - can reuse
+    usedNrsHPIO = set()                     # Nurse HPI-O that have already been used - can reuse
+
+    deptHPIOs = set()                       # Department HPI-Os that need a templated FHIR CareTeam Resource
+    careTeams = {}                          # The list of Practitioners in each Organization for FHIR CareTeam Resource
+    patientDetails = {}                     # The patient details plus the list of GPs for FHIR Patient Resource
+    practitionerDetails = {}                # The practitioner details plus the list of provider numbers for FHIR Practitioner Resource
     for thisNetwork in range(noOfNetworks):
         # healthNetworks fields:network_HPI-O,networkName,authority,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone
         outputRow = []
@@ -1348,352 +1665,173 @@ The main code
         networkHPIO = f'{networkHPIO}{mkLuhn(networkHPIO):d}'
         outputRow.append(networkHPIO)
         if thisNetwork == len(networkNames):
-            logging.fatal('Insufficient networkNames on configuration')
+            logging.fatal('Insufficient networkNames in configuration')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
+        if thisNetwork == len(networkPostcodes):
+            logging.fatal('Insufficient networkPostcodes in configuration')
             logging.shutdown()
             sys.exit(EX_CONFIG)
 
-        # Network - select an SA4
-        networkSA2 = random.choice(list(SA1s))[0:9]
-        networkSA4 = networkSA2[:3]
-        name = networkNames[thisNetwork]
-        outputRow.append(name)
-        initials = name.split(' ')
+        # Network - select an SA3
+        networkSA3 = None
+        for thisSA3 in SA3postcodes:
+            if networkPostcodes[thisNetwork] in SA3postcodes[thisSA3]:
+                networkSA3 = thisSA3
+                break
+        if networkSA3 is None:
+            logging.fatal('Network postcode (%s) not in address file', networkPostcodes[thisNetwork])
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
+        networkName = networkNames[thisNetwork]
+        outputRow.append(networkName)
+        initials = networkName.split(' ')
         authority = ''
         for initial in initials:
             authority += initial[0].upper()
         outputRow.append(authority)
         # Start with the address (less postcode)
+        thisAddr = mkRandAddress(networkSA3, True, makeRandom)
         for field in addressFields:
-            if field == 'postcode':
-                # Make the postcode one that is within this SA3
-                sa3 = networkSA2[:5]
-                outputRow.append(random.choice(list(SA3postcodes[sa3])))
-            else:
-                outputRow.append(patients[patientKeys[record]][field])
+            outputRow.append(thisAddr[field])
         # And the network specific fields
         for field in networkFields:
             outputRow.append(patients[patientKeys[record]][field])
         healthNetworks.append(outputRow)
-        FHIR_Organization.append([networkHPIO, createOrganization(record, networkHPIO, None, name, None, 'network')])
+        FHIR_Organization.append([networkHPIO, createOrganization(record, networkHPIO, None, networkName, None, 'network')])
 
         # Now create some hospitals - some public and some private
-        for hospital in ['associated', 'private']:
-            noOfHospitals = random.randrange(hospitals[hospital]['minHospitals'], hospitals[hospital]['maxHospitals'])
-            hospitals[hospital]['hospitalSA3'] = []
-            # public hospital fields:network_HPI-O,hospital_HPI-O,hospitalName,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone
-            # private hospital fields:hospital_HPI-O,hospitalName,authority,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone
-            for thisHospital in range(noOfHospitals):
-                outputRow = []
-                if hospital == 'associated':
-                    outputRow.append(networkHPIO)
+        createdPrivateHospitals = set()             # In case two public hospitals are close to the same private hospital
+        hospitals[f'{networkName} hospitals']['hospitalSA3'] = []
+        publicHospitalNo = 0
+        noOfHospitals = random.randrange(hospitals[f'{networkName} hospitals']['minHospitals'], hospitals[f'{networkName} hospitals']['maxHospitals'])
+        # public hospital fields:network_HPI-O,hospital_HPI-O,hospitalName,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone
+        # private hospital fields:hospital_HPI-O,hospitalName,authority,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone
+        for thisHospital in range(noOfHospitals):
+            outputRow = [networkHPIO]
+            # Assign HPI-O organization ID
+            record += 1
+            IHI = patients[patientKeys[record]]['IHI']
+            hospitalHPIO = IHI[:5] + '2' + IHI[6:-1]
+            hospitalHPIO = f'{hospitalHPIO}{mkLuhn(hospitalHPIO):d}'
+            outputRow.append(hospitalHPIO)
+            localSpecialists[hospitalHPIO] = {}
+            localNurses[hospitalHPIO] = {}
+            localGPs[hospitalHPIO] = {}
+            localPatients[hospitalHPIO] = {}
+            # Assign a name and select a different SA2 in this SA4
+            if publicHospitalNo == len(hospitals[f'{networkName} hospitals']['hospitalNames']):
+                logging.fatal(f'Insufficient hospitalNames for {networkName} network in configuration')
+                logging.shutdown()
+                sys.exit(EX_CONFIG)
+            if publicHospitalNo == len(hospitals[f'{networkName} hospitals']['hospitalPostcodes']):
+                logging.fatal(f'Insufficient hospitalPostcodes for {networkName} network in configuration')
+                logging.shutdown()
+                sys.exit(EX_CONFIG)
+            hospitalName = hospitals[f'{networkName} hospitals']['hospitalNames'][publicHospitalNo]
+            hospitalPostcode = hospitals[f'{networkName} hospitals']['hospitalPostcodes'][publicHospitalNo]
+            publicHospitalNo += 1
+            outputRow.append(hospitalName)
+            # Create an address - check that the postcode is in our address file
+            hospitalSA3 = None
+            for thisSA3 in SA3postcodes:
+                if hospitalPostcode in SA3postcodes[thisSA3]:
+                    hospitalSA3 = thisSA3
+                    break
+            if hospitalSA3 is None:
+                logging.fatal('Hospital postcode (%s) not in address file', hospitalPostcode)
+                logging.shutdown()
+                sys.exit(EX_CONFIG)
+            hospitals[f'{networkName} hospitals']['hospitalSA3'].append(hospitalSA3)
+            thisAddr = mkRandAddress(hospitalSA3, True, makeRandom)
+            for field in addressFields:
+                outputRow.append(thisAddr[field])
+            for field in hospitalFields:
+                outputRow.append(patients[patientKeys[record]][field])
+            publicHospitals.append(outputRow)
+            FHIR_Organization.append([hospitalHPIO, createOrganization(record, hospitalHPIO, networkHPIO, hospitalName, thisAddr, 'public hospital')])
+            FHIR_Location.append([hospitalHPIO, createLocation(record, hospitalHPIO, hospitalName, thisAddr, networkHPIO)])
+
+            mkDepartments(networkHPIO, hospitalHPIO, hospitalHPIO, thisAddr, hospitalName, '', True)
+
+            # Now make the private hospitals for this local public hospital
+            privateHospitalNo = 0
+            localPublicHospitalHPIO = hospitalHPIO
+            noOfPrivateHospitals = random.randrange(hospitals[f'{networkName} hospitals'][hospitalName]['minPrivateHospitals'], hospitals[f'{networkName} hospitals'][hospitalName]['maxPrivateHospitals'])
+            for thisPrivateHospital in range(noOfPrivateHospitals):
+                outputRow = [networkHPIO, localPublicHospitalHPIO]
                 # Assign HPI-O organization ID
                 record += 1
                 IHI = patients[patientKeys[record]]['IHI']
-                hospital_HPIO = IHI[:5] + '2' + IHI[6:-1]
-                hospital_HPIO = f'{hospital_HPIO}{mkLuhn(hospital_HPIO):d}'
-                outputRow.append(hospital_HPIO)
+                privateHospitalHPIO = IHI[:5] + '2' + IHI[6:-1]
+                privateHospitalHPIO = f'{privateHospitalHPIO}{mkLuhn(privateHospitalHPIO):d}'
+                outputRow.append(privateHospitalHPIO)
                 # Assign a name and select a different SA2 in this SA4
-                if hospital == 'associated':
-                    if publicHospitalNo == len(hospitals[hospital]['hospitalNames']):
-                        logging.fatal('Insufficient associated hospitalNames in configuration')
-                        logging.shutdown()
-                        sys.exit(EX_CONFIG)
-                    if publicHospitalNo == len(hospitals[hospital]['hospitalPostcodes']):
-                        logging.fatal('Insufficient associated hospitalPostcodes in configuration')
-                        logging.shutdown()
-                        sys.exit(EX_CONFIG)
-                    hospitalName = hospitals[hospital]['hospitalNames'][publicHospitalNo]
-                    hospitalPostcode = hospitals[hospital]['hospitalPostcodes'][publicHospitalNo]
-                    publicHospitalNo += 1
-                else:
-                    if privateHospitalNo == len(hospitals[hospital]['hospitalNames']):
-                        logging.fatal('Insufficient private hospitalNames in configuration')
-                        logging.shutdown()
-                        sys.exit(EX_CONFIG)
-                    if privateHospitalNo == len(hospitals[hospital]['hospitalPostcodes']):
-                        logging.fatal('Insufficient private hospitalPostcodes in configuration')
-                        logging.shutdown()
-                        sys.exit(EX_CONFIG)
-                    hospitalName = hospitals[hospital]['hospitalNames'][privateHospitalNo]
-                    hospitalPostcode = hospitals[hospital]['hospitalPostcodes'][privateHospitalNo]
-                    privateHospitalNo += 1
-                outputRow.append(hospitalName)
-                if hospital == 'private':
-                    initials = hospitalName.split(' ')
-                    authority = ''
-                    for initial in initials:
-                        authority += initial[0].upper()
-                    outputRow.append(authority)
-                # Create an address - check that the postcode is in our address file
-                hospitalSA3 = None
-                for thisSA3 in SA3postcodes:
-                    if hospitalPostcode in SA3postcodes[thisSA3]:
-                        hospitalSA3 = thisSA3
-                        break
-                if hospitalSA3 is None:
-                    logging.fatal('Hospital postcode (%s) not in address file', hospitalPostcode)
+                if privateHospitalNo == len(hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalNames']):
+                    logging.fatal(f'Insufficient privateHospitalNames for public hospital {hospitalName} in {hospitalName} section in configuration')
                     logging.shutdown()
                     sys.exit(EX_CONFIG)
-                hospitals[hospital]['hospitalSA3'].append(hospitalSA3)
-                thisAddr = mkRandAddress(hospitalSA3, True, makeRandom)
+                if privateHospitalNo == len(hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalPostcodes']):
+                    logging.fatal(f'Insufficient privateHospitalPostcodes for public hospital {hospitalName} in {hospitalName} section in configuration')
+                    logging.shutdown()
+                    sys.exit(EX_CONFIG)
+                privateHospitalName = hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalNames'][privateHospitalNo]
+                if privateHospitalName in createdPrivateHospitals:          # Skip if this private hospital has already been created
+                    continue
+                createdPrivateHospitals.add(privateHospitalName)
+                privateHospitalPostcode = hospitals[f'{networkName} private hospitals'][hospitalName]['hospitalPostcodes'][privateHospitalNo]
+                privateHospitalNo += 1
+                outputRow.append(privateHospitalName)
+                initials = privateHospitalName.split(' ')
+                authority = ''
+                for initial in initials:
+                    authority += initial[0].upper()
+                outputRow.append(authority)
+                # Create an address - check that the postcode is in our address file
+                privateHospitalSA3 = None
+                for thisSA3 in SA3postcodes:
+                    if privateHospitalPostcode in SA3postcodes[thisSA3]:
+                        privateHospitalSA3 = thisSA3
+                        break
+                if privateHospitalSA3 is None:
+                    logging.fatal('Private Hospital postcode (%s)  for Private Hospital %s not in address file', privateHospitalPostcode, privateHospitalName)
+                    logging.shutdown()
+                    sys.exit(EX_CONFIG)
+                thisAddr = mkRandAddress(privateHospitalSA3, True, makeRandom)
                 for field in addressFields:
                     outputRow.append(thisAddr[field])
                 for field in hospitalFields:
                     outputRow.append(patients[patientKeys[record]][field])
-                if hospital == 'associated':
-                    publicHospitals.append(outputRow)
-                    FHIR_Organization.append([hospital_HPIO, createOrganization(record, hospital_HPIO, networkHPIO, hospitalName, thisAddr, 'public hospital')])
-                    FHIR_Location.append([hospital_HPIO, createLocation(record, hospital_HPIO, hospitalName, thisAddr, networkHPIO)])
-                else:
-                    privateHospitals.append(outputRow)
-                    FHIR_Organization.append([hospital_HPIO, createOrganization(record, hospital_HPIO, None, hospitalName, thisAddr, 'private hospital')])
-                    FHIR_Location.append([hospital_HPIO, createLocation(record, hospital_HPIO, hospitalName, thisAddr, None)])
+                privateHospitals.append(outputRow)
+                FHIR_Organization.append([privateHospitalHPIO, createOrganization(record, privateHospitalHPIO, None, privateHospitalName, thisAddr, 'private hospital')])
+                FHIR_Location.append([privateHospitalHPIO, createLocation(record, privateHospitalHPIO, privateHospitalName, thisAddr, None)])
 
-                # Now create some departments and staff for this hospital
-                # department fields:hospital_HPI-O,department_HPI-O,departmentName,departmentSpecialty,specialtyDescription
-                noOfDepartments = len(hospitals[hospital][hospitalName]['departments'])
-                for thisDepartment in range(noOfDepartments):
-                    department = hospitals[hospital][hospitalName]['departments'][thisDepartment]
-                    outputRow = []
-                    outputRow.append(hospital_HPIO)
-                    record += 1
-                    IHI = patients[patientKeys[record]]['IHI']
-                    department_HPIO = IHI[:5] + '2' + IHI[6:-1]
-                    department_HPIO = f'{department_HPIO}{mkLuhn(department_HPIO):d}'
-                    deptHPIOs.add(department_HPIO)
-                    outputRow.append(department_HPIO)
-                    outputRow.append(department)
-                    if department in ['Emergency', 'Medical', 'Midwifery', 'Surgical', 'Paediatric', 'Intensive Care']:
-                        outputRow.append('PAS')
-                    else:
-                        outputRow.append(department[:4].upper())
-                    outputRow.append(departmentSpecialties[department])
-                    outputRow.append(Specialties[departmentSpecialties[department]])
-                    hospitalPhone = patients[patientKeys[record]]['businessPhone']
-                    for field in departmentFields:
-                        outputRow.append(patients[patientKeys[record]][field])
-                    if hospital == 'associated':
-                        publicHospitalDepartments.append(outputRow)
-                    else:
-                        privateHospitalDepartments.append(outputRow)
-                    FHIR_Organization.append([department_HPIO, createOrganization(record, department_HPIO, hospital_HPIO, department, thisAddr, 'department')])
-                    specialty = departmentSpecialties[department]
-                    FHIR_HealthcareService.append([department_HPIO, createHealthcareService(record, department_HPIO, department + '@' + hospitalName, 'department', specialty)])
+                mkDepartments(networkHPIO, localPublicHospitalHPIO, privateHospitalHPIO, thisAddr, hospitalName, privateHospitalName, False)
 
-                    # Now create some staff
-                    outputRow = []
-                    # staff fields:department_HPI-O,staffSpecialty,specialtyDescription,role,roleDescription,HPI-I,providerNo,prescriberNo,ahpraNo,title,familyName,givenName,birthdate,sex,workMobile,businessPhone,workEmail
-                    noOfSpecialists = random.randrange(hospitals[hospital]['minSpecialists'], hospitals[hospital]['maxSpecialists'])
-                    deptSpecialists = set()
-                    for thisSpecialsist in range(noOfSpecialists):
-                        outputRow = []
-                        outputRow.append(department_HPIO)
-                        outputRow.append(departmentSpecialties[department])
-                        outputRow.append(
-                            Specialties[departmentSpecialties[department]])
-                        role = departmentSpecialist[department]
-                        outputRow.append(role)
-                        outputRow.append(Roles[role])
-                        if hospital == 'associated':
-                            if (len(usedPubDrHPIO) > 10) and (len(usedPubDrHPIO) > len(deptSpecialists)) and (random.random() < 0.2):
-                                thisRecord = random.choice(list(usedPubDrHPIO))
-                                while thisRecord in deptSpecialists:
-                                    thisRecord = random.choice(list(usedPubDrHPIO))
-                                    logging.debug('Searching for a used public hospital doctor')
-                            else:
-                                record += 1
-                                thisRecord = record
-                                usedPubDrHPIO.add(record)
-                        else:
-                            if (len(usedPrivDrHPIO) > 10) and (len(usedPrivDrHPIO) > len(deptSpecialists)) and (random.random() < 0.2):
-                                thisRecord = random.choice(list(usedPrivDrHPIO))
-                                while thisRecord in deptSpecialists:
-                                    thisRecord = random.choice(list(usedPrivDrHPIO))
-                                    logging.debug('Searching for a used private hospital doctor')
-                            else:
-                                record += 1
-                                thisRecord = record
-                                usedPrivDrHPIO.add(record)
-                        deptSpecialists.add(thisRecord)
-                        IHI = patients[patientKeys[thisRecord]]['IHI']
-                        specialist_HPII = IHI[:5] + '1' + IHI[6:-1]
-                        specialist_HPII = f'{specialist_HPII}{mkLuhn(specialist_HPII):d}'
-                        outputRow.append(specialist_HPII)
-                        while True:        # Loop if the providerNo is not distinct
-                            providerNo = f'{random.randint(100000, 999999):06d}'
-                            if providerNo not in usedProviderNo:
-                                break
-                            logging.debug('Searching for a free provider number for a hospital doctor')
-                        usedProviderNo[providerNo] = True
-                        outputRow.append(mkProviderNo(providerNo))
-                        outputRow.append(mkPrescriberNo(providerNo))
-                        while True:        # Loop if the ahpraNo is not distinct
-                            ahpraNo = random.randint(9000000000, 9999999999)
-                            if ahpraNo not in usedAhpraNo:
-                                break
-                            logging.debug('Searching for a free AHPRA number for a hospital doctor')
-                        usedAhpraNo.add(ahpraNo)
-                        outputRow.append('MED' + str(ahpraNo))
-                        outputRow.append('Dr.')
-                        patients[patientKeys[thisRecord]]['businessPhone'] = hospitalPhone
-                        for field in drFields:
-                            outputRow.append(patients[patientKeys[thisRecord]][field])
-                        if hospital == 'associated':
-                            publicHospitalStaff.append(outputRow)
-                        else:
-                            privateHospitalStaff.append(outputRow)
-                        PRD = 'PRD||' + patients[patientKeys[thisRecord]]['familyName'] + '^' + patients[patientKeys[thisRecord]]['givenName'] + '^^^DR^^L'            # PRD-2 Provider Name
-                        PRD += '|' + thisAddr['streetNo'] + ' ' + thisAddr['streetName'] + ' ' + thisAddr['streetType']
-                        PRD += '^^' + thisAddr['suburb'] + '^' + thisAddr['state'] + '^' + thisAddr['postcode'] + '^AUS^M'   # PRD-3 Provider Address
-                        PRD += '||^PRN^PH^^^^^^' + patients[patientKeys[thisRecord]]['homePhone']
-                        PRD += '~^PRN^CP^^^^^^' + patients[patientKeys[thisRecord]]['mobile']
-                        PRD += '~^NET^Internet^' + patients[patientKeys[thisRecord]]['email']
-                        PRD += '~^WPN^PH^^^^^^' + patients[patientKeys[thisRecord]]['businessPhone']            # PRD-5 home phone, mbile, email, business phone
-                        PRD += '||' + mkProviderNo(providerNo) + '^AUSHICPR^UPIN'
-                        PRD += '~' + mkPrescriberNo(providerNo) + '^AUSHIC^NPI'                                 # PRD-7 Provider identifiers
-                        PRDrow = []
-                        PRDrow.append(specialist_HPII)
-                        PRDrow.append(PRD)
-                        HL7_PRD.append(PRDrow)
-                        FHIR_Practitioner.append([specialist_HPII, createPractitioner(thisRecord, department_HPIO, specialist_HPII, providerNo, ahpraNo)])
-                        FHIR_PractitionerRole.append([specialist_HPII, createPractitionerRole(thisRecord, department_HPIO, specialist_HPII, role, departmentSpecialties[department])])
-
-                    noOfNurses = random.randrange(hospitals[hospital]['minNurses'], hospitals[hospital]['maxNurses'])
-                    deptNurses = set()
-                    for thisNurse in range(noOfNurses):
-                        outputRow = []
-                        outputRow.append(department_HPIO)
-                        outputRow.append(departmentSpecialties[department])
-                        outputRow.append(Specialties[departmentSpecialties[department]])
-                        role = '106292003'     # Nurse
-                        outputRow.append(role)
-                        outputRow.append(Roles[role])
-                        if (len(usedNrsHPIO) > 10) and (len(usedNrsHPIO) > len(deptNurses)) and (random.random() < 0.1):
-                            thisRecord = random.choice(list(usedNrsHPIO))
-                            while thisRecord in deptNurses:
-                                thisRecord = random.choice(list(usedNrsHPIO))
-                                logging.debug('Searching for a used hospital nurse')
-                        else:
-                            record += 1
-                            thisRecord = record
-                            usedNrsHPIO.add(record)
-                        deptNurses.add(thisRecord)
-                        IHI = patients[patientKeys[thisRecord]]['IHI']
-                        nurse_HPII = IHI[:5] + '1' + IHI[6:-1]
-                        nurse_HPII = f'{nurse_HPII}{mkLuhn(nurse_HPII):d}'
-                        outputRow.append(nurse_HPII)
-                        while True:        # Loop if the providerNo is not distinct
-                            providerNo = f'{random.randint(100000, 999999):06d}'
-                            if providerNo not in usedProviderNo:
-                                break
-                            logging.debug('Searching for a free provider number for a hospital nurse')
-                        usedProviderNo[providerNo] = True
-                        outputRow.append(mkProviderNo(providerNo))
-                        outputRow.append(mkPrescriberNo(providerNo))
-                        while True:        # Loop if the ahpraNo is not distinct
-                            ahpraNo = random.randint(9000000000, 9999999999)
-                            if ahpraNo not in usedAhpraNo:
-                                break
-                            logging.debug('Searching for a free AHPRA number for a hospital nurse')
-                        usedAhpraNo.add(ahpraNo)
-                        outputRow.append('MED' + str(ahpraNo))
-                        outputRow.append('Nrs.')
-                        patients[patientKeys[thisRecord]]['businessPhone'] = hospitalPhone
-                        for field in drFields:
-                            outputRow.append(patients[patientKeys[thisRecord]][field])
-                        if hospital == 'associated':
-                            publicHospitalStaff.append(outputRow)
-                        else:
-                            privateHospitalStaff.append(outputRow)
-                        PRD = 'PRD||' + patients[patientKeys[thisRecord]]['familyName'] + '^' + patients[patientKeys[thisRecord]]['givenName'] + '^^^DR^^L'            # PRD-2 Provider Name
-                        PRD += '|' + thisAddr['streetNo'] + ' ' + thisAddr['streetName'] + ' ' + thisAddr['streetType']
-                        PRD += '^^' + thisAddr['suburb'] + '^' + thisAddr['state'] + '^' + thisAddr['postcode'] + '^AUS^M'   # PRD-3 Provider Address
-                        PRD += '||^PRN^PH^^^^^^' + patients[patientKeys[thisRecord]]['homePhone']
-                        PRD += '~^PRN^CP^^^^^^' + patients[patientKeys[thisRecord]]['mobile']
-                        PRD += '~^NET^Internet^' + patients[patientKeys[thisRecord]]['email']
-                        PRD += '~^WPN^PH^^^^^^' + patients[patientKeys[thisRecord]]['businessPhone']            # PRD-5 home phone, mbile, email, business phone
-                        PRD += '||' + mkProviderNo(providerNo) + '^AUSHICPR^UPIN'
-                        PRD += '~' + mkPrescriberNo(providerNo) + '^AUSHIC^NPI'                                 # PRD-7 Provider identifiers
-                        PRDrow = []
-                        PRDrow.append(nurse_HPII)
-                        PRDrow.append(PRD)
-                        HL7_PRD.append(PRDrow)
-                        FHIR_Practitioner.append([nurse_HPII, createPractitioner(thisRecord, department_HPIO, nurse_HPII, providerNo, ahpraNo)])
-                        FHIR_PractitionerRole.append([nurse_HPII, createPractitionerRole(thisRecord, department_HPIO, nurse_HPII, role, departmentSpecialties[department])])
-
-        # Now do the local GP clinics for this health network
-        noOfClinics = random.randrange(minClinics, maxClinics)
-        # clinics fields:clinic_HPI-O,clinicName,authority,application,clinicSpecialty,specialtyDescription,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone,email])
-        for thisClinic in range(noOfClinics):
-            outputRow = []
-            # HPI-O as the organization ID
-            record += 1
-            IHI = patients[patientKeys[record]]['IHI']
-            clinic_HPIO = IHI[:5] + '2' + IHI[6:-1]
-            clinic_HPIO = f'{clinic_HPIO}{mkLuhn(clinic_HPIO):d}'
-            outputRow.append(clinic_HPIO)
-            uniqueName = False
-            hospitalSA3 = random.choice(list(hospitals['associated']['hospitalSA3']))
-            while not uniqueName:
-                # Create a local address close to this hospital
-                clinicAddr = mkRandAddress(hospitalSA3, True, makeRandom)
-                # Create a clinic from street or suburb plus Medical/Medical Clinic/Medical Centre
-                if random.random() < 0.7:            # street or suburb
-                    clinicName = clinicAddr['streetName'] + ' ' + clinicAddr['streetType']
-                else:
-                    clinicName = clinicAddr['suburb']
-                clinicName += ' Medical'
-                if random.random() < 0.4:            # Clinic or Centre or nothing
-                    clinicName += ' Clinic'
-                elif random.random() < 0.4:            # Clinic or Centre or nothing
-                    clinicName += ' Centre'
-                if clinicName in usedClinicNames:
-                    logging.debug('Searching of an unused GP clinic name - %s is not unique', clinicName)
-                    continue
-                usedClinicNames.add(clinicName)
-                uniqueName = True
-                outputRow.append(clinicName)
-            initials = clinicName.split(' ')
-            authority = ''
-            for initial in initials:
-                authority += initial[0].upper()
-            outputRow.append(authority)
-            outputRow.append('PAS')
-            outputRow.append('408443003')
-            outputRow.append('General medical practice')
-            clinicPhone = patients[patientKeys[record]]['businessPhone']
-            for field in addressFields:
-                outputRow.append(clinicAddr[field])
-            # And the clinic specific fields
-            for field in clinicFields:
-                outputRow.append(patients[patientKeys[record]][field])
-            clinics.append(outputRow)
-            FHIR_Organization.append([clinic_HPIO, createOrganization(record, clinic_HPIO, None, clinicName, clinicAddr, 'clinic')])
-            FHIR_Location.append([clinic_HPIO, createLocation(record, clinic_HPIO, clinicName, clinicAddr, None)])
-            FHIR_HealthcareService.append([clinic_HPIO, createHealthcareService(record, clinic_HPIO, clinicName, 'clinic', '408443003')])
-
-            # Now the local consultants
-            noOfConsultants = random.randrange(minConsultants, maxConsultants)
-            clinicSpecialists = set()
-            for thisConsultant in range(noOfConsultants):
-                outputRow = []
+            # Now the local Specialty Services
+            noOfSpecialistServices = random.randrange(minSpecialistServices, maxSpecialistServices)
+            for thisSpecialistClinic in range(noOfSpecialistServices):
+                outputRow = [networkHPIO, localPublicHospitalHPIO]
                 # Consultants a have Specialist Service as their organization
                 # specialist services fields:specialistService_HPI-O,specialistServiceName,serviceSpecialty,specialtyDescripion,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessMobile,businessPhone,businessEmail
                 record += 1
                 IHI = patients[patientKeys[record]]['IHI']
-                specialist_HPIO = IHI[:5] + '2' + IHI[6:-1]
-                specialist_HPIO = f'{specialist_HPIO}{mkLuhn(specialist_HPIO):d}'
-                outputRow.append(specialist_HPIO)
-                # Create a local address close to this hospital
-                thisAddr = mkRandAddress(hospitalSA3, True, makeRandom)
-                # Assign a business name being "suburb specialty services"
-                # Pick a specialty
-                specialty = random.choice(list(SpecialistRoles))
-                # Create the Service Name
-                name = thisAddr['suburb'] + ' ' + HealthcareRoles[SpecialistRoles[specialty][1]]
-                if name in usedSpecServiceNames:
-                    continue
-                usedSpecServiceNames.add(name)
+                specialistServiceHPIO = IHI[:5] + '2' + IHI[6:-1]
+                specialistServiceHPIO = f'{specialistServiceHPIO}{mkLuhn(specialistServiceHPIO):d}'
+                careTeams[specialistServiceHPIO] = set()
+                outputRow.append(specialistServiceHPIO)
+                uniqueName = False
+                while not uniqueName:
+                    # Create a local address close to this hospital
+                    thisAddr = mkRandAddress(hospitalSA3, True, makeRandom)
+                    # Assign a business name being "suburb specialty services"
+                    # Pick a specialty
+                    specialty = random.choice(list(SpecialistRoles))
+                    # Create the Service Name
+                    name = thisAddr['suburb'] + ' ' + HealthcareRoles[SpecialistRoles[specialty][1]]
+                    if name not in usedSpecServiceNames:
+                        uniqueName = True
+                        usedSpecServiceNames.add(name)
                 outputRow.append(name)
                 initials = name.split(' ')
                 authority = ''
@@ -1711,47 +1849,77 @@ The main code
                 for field in clinicFields:
                     outputRow.append(patients[patientKeys[record]][field])
                 specialistServices.append(outputRow)
-                FHIR_Organization.append([clinic_HPIO, createOrganization(record, clinic_HPIO, None, name, thisAddr, 'specialist')])
-                FHIR_Location.append([specialist_HPIO, createLocation(record, specialist_HPIO, name, thisAddr, None)])
-                FHIR_HealthcareService.append([specialist_HPIO, createHealthcareService(record, specialist_HPIO, name, 'specialist', specialty)])
+                FHIR_Organization.append([specialistServiceHPIO, createOrganization(record, specialistServiceHPIO, None, name, thisAddr, 'specialist')])
+                FHIR_Location.append([specialistServiceHPIO, createLocation(record, specialistServiceHPIO, name, thisAddr, None)])
+                FHIR_HealthcareService.append([specialistServiceHPIO, createHealthcareService(record, specialistServiceHPIO, name, 'specialist', specialty)])
 
                 # Now output the Specialist
                 # specialists fields:specialistService_HPI-O,specialistSpecialty,specialtyDescripion,role,roleDescription,HPI-I,providerNo,title,familyName,givenName,birthdate,sex
-                for thisSpecialist in range(1, random.randrange(6)):       # Give each specalist clinic between 1 and 5 specialists
-                    outputRow = []
-                    outputRow.append(specialist_HPIO)
+                clinicSpecialists = set()               # Can't have two records for the same specialist in this clinic
+                noOfSpecialists = random.randrange(minSpecialists, maxSpecialists)
+                for thisSpecialist in range(noOfSpecialists):       # Give each specalist clinic between 1 and 5 specialists
+                    outputRow = [networkHPIO, localPublicHospitalHPIO, specialistServiceHPIO]
+                    specialistHPII = None
+                    providerNo = None
+                    prescriberNo = None
+                    ahpraNo = None
+                    avaliableSpecialists = set(localSpecialists[localPublicHospitalHPIO].keys()) - clinicSpecialists
+                    if (len(avaliableSpecialists) > 20) and (random.random() < 0.3):
+                        thisRecord = random.choice(list(avaliableSpecialists))
+                        specialistHPII = localSpecialists[localPublicHospitalHPIO][thisRecord]['HPI-I']
+                        prescriberNo = localSpecialists[localPublicHospitalHPIO][thisRecord]['prescriberNo']
+                        providerNo = localSpecialists[localPublicHospitalHPIO][thisRecord]['providerNo']
+                        usedProviderNo[providerNo] += 1
+                        if usedProviderNo[providerNo] == 30:
+                            providerNo = None
+                        ahpraNo = localSpecialists[localPublicHospitalHPIO][thisRecord]['ahpraNo']
+                    else:
+                        record += 1
+                        thisRecord = record
+                        localSpecialists[localPublicHospitalHPIO][thisRecord] = {}
+                    clinicSpecialists.add(thisRecord)
+                    if specialistHPII is None:
+                        IHI = patients[patientKeys[thisRecord]]['IHI']
+                        specialistHPII = IHI[:5] + '1' + IHI[6:-1]
+                        specialistHPII = f'{specialistHPII}{mkLuhn(specialistHPII):d}'
+                        localSpecialists[localPublicHospitalHPIO][thisRecord]['HPI-I'] = specialistHPII
+                    if specialistHPII not in practitionerDetails:
+                        practitionerDetails[specialistHPII] = {}
+                        practitionerDetails[specialistHPII]['providerNos'] = []
+                        practitionerDetails[specialistHPII]['record'] = thisRecord
+                    careTeams[specialistServiceHPIO].add(specialistHPII)
+                    outputRow.append(specialistHPII)
                     outputRow.append(specialty)
                     outputRow.append(Specialties[specialty])
                     role = SpecialistRoles[specialty][0]
                     outputRow.append(role)
                     outputRow.append(Roles[role])
-                    if (len(usedPrivDrHPIO) > 10) and (len(usedPrivDrHPIO) > len(clinicSpecialists)) and (random.random() < 0.3):
-                        thisRecord = random.choice(list(usedPrivDrHPIO))
-                        while thisRecord in clinicSpecialists:
-                            thisRecord = random.choice(list(usedPrivDrHPIO))
-                            logging.debug('Searching for a used clinicSpecialist')
-                    else:
-                        record += 1
-                        thisRecord = record
-                    clinicSpecialists.add(thisRecord)
-                    IHI = patients[patientKeys[thisRecord]]['IHI']
-                    specialist_HPII = IHI[:5] + '1' + IHI[6:-1]
-                    specialist_HPII = f'{specialist_HPII}{mkLuhn(specialist_HPII):d}'
-                    outputRow.append(specialist_HPII)
-                    while True:        # Loop if the providerNo is not distinct
-                        providerNo = f'{random.randint(100000, 999999):06d}'
-                        if providerNo not in usedProviderNo:
-                            break
-                        logging.debug('Searching for a free provider number for a specialist')
-                    usedProviderNo[providerNo] = True
+                    if providerNo is None:
+                        while True:        # Loop if the providerNo is not distinct
+                            providerNo = f'{random.randint(100000, 999999):06d}'
+                            if providerNo not in usedProviderNo:
+                                break
+                            logging.debug('Searching for a free provider number for a specialist')
+                        usedProviderNo[providerNo] = 0
+                        localSpecialists[localPublicHospitalHPIO][thisRecord]['providerNo'] = providerNo
+                    practitionerDetails[specialistHPII]['providerNos'].append(mkProviderNo(providerNo))
                     outputRow.append(mkProviderNo(providerNo))
-                    outputRow.append(mkPrescriberNo(providerNo))
-                    while True:        # Loop if the ahpraNo is not distinct
-                        ahpraNo = random.randint(9000000000, 9999999999)
-                        if ahpraNo not in usedAhpraNo:
-                            break
-                        logging.debug('Searching for a free AHPRA number for a specialist')
-                    usedAhpraNo.add(ahpraNo)
+                    if prescriberNo is None:
+                        prescriberNo = mkPrescriberNo(providerNo)
+                        localSpecialists[localPublicHospitalHPIO][thisRecord]['prescriberNo'] = prescriberNo
+                    if 'prescriberNo' not in practitionerDetails[specialistHPII]:
+                        practitionerDetails[specialistHPII]['prescriberNo'] = prescriberNo
+                    outputRow.append(prescriberNo)
+                    if ahpraNo is None:
+                        while True:        # Loop if the ahpraNo is not distinct
+                            ahpraNo = random.randint(9000000000, 9999999999)
+                            if ahpraNo not in usedAhpraNo:
+                                break
+                            logging.debug('Searching for a free AHPRA number for a specialist')
+                        usedAhpraNo.add(ahpraNo)
+                        localSpecialists[localPublicHospitalHPIO][thisRecord]['ahpraNo'] = ahpraNo
+                    if 'ahpraNo' not in practitionerDetails[specialistHPII]:
+                        practitionerDetails[specialistHPII]['ahpraNo'] = ahpraNo
                     outputRow.append('MED' + str(ahpraNo))
                     if patients[patientKeys[thisRecord]]['sex'] == 'F':
                         title = 'Ms.'
@@ -1771,116 +1939,205 @@ The main code
                     PRD += '~^NET^Internet^' + patients[patientKeys[thisRecord]]['email']
                     PRD += '~^WPN^PH^^^^^^' + patients[patientKeys[thisRecord]]['businessPhone']            # PRD-5 home phone, mbile, email, business phone
                     PRD += '||' + mkProviderNo(providerNo) + '^AUSHICPR^UPIN'
-                    PRD += '~' + mkPrescriberNo(providerNo) + '^AUSHIC^NPI'                                 # PRD-7 Provider identifiers
+                    PRD += '~' + prescriberNo + '^AUSHIC^NPI'                                 # PRD-7 Provider identifiers
                     PRDrow = []
-                    PRDrow.append(specialist_HPII)
+                    PRDrow.append(specialistHPII)
                     PRDrow.append(PRD)
                     HL7_PRD.append(PRDrow)
-                    FHIR_Practitioner.append([specialist_HPII, createPractitioner(thisRecord, specialist_HPIO, specialist_HPII, providerNo, ahpraNo)])
-                    FHIR_PractitionerRole.append([specialist_HPII, createPractitionerRole(thisRecord, specialist_HPIO, specialist_HPII, role, specialty)])
+                    # FHIR_Practitioner.append([specialistHPII, createPractitioner(thisRecord, specialistServiceHPIO, specialistHPII, providerNo, ahpraNo)])
+                    FHIR_PractitionerRole.append([specialistHPII, createPractitionerRole(thisRecord, specialistServiceHPIO, specialistHPII, role, specialty)])
 
-            # Now the clinic doctors and their patients
-            noOfDoctors = random.randrange(minDr, maxDr)
-            clinicDoctors = set()
-            for thisDoctor in range(noOfDoctors):
-                # clinic Staff fields:clinic_HPI-O,staffSpecialty,specialtyDescripion,role,roleDescription,HPI-I,providerNo,title,familyName,givenName,birthdate,sex,workMobile,businessPhone,workEmail
-                outputRow = []
-                outputRow.append(clinic_HPIO)
-                # Pick a specialty
-                specialty = random.choice(list(GPspecialties))
-                outputRow.append(specialty)
-                outputRow.append(Specialties[specialty])
-                role = GPspecialties[specialty]
-                outputRow.append(role)
-                outputRow.append(Roles[role])
-                # Doctors have their own HPI-I codes
-                if (len(usedPubDrHPIO) > 10) and (len(usedPubDrHPIO) > len(clinicDoctors)) and (random.random() < 0.3):
-                    thisRecord = random.choice(list(usedPubDrHPIO))
-                    while thisRecord in clinicDoctors:
-                        thisRecord = random.choice(list(usedPubDrHPIO))
-                        logging.debug('Searching for a used public doctor')
-                else:
-                    record += 1
-                    thisRecord = record
-                clinicDoctors.add(thisRecord)
-                IHI = patients[patientKeys[thisRecord]]['IHI']
-                GP_HPII = IHI[:5] + '1' + IHI[6:-1]
-                GP_HPII = f'{GP_HPII}{mkLuhn(GP_HPII):d}'
-                outputRow.append(GP_HPII)
-                while True:        # Loop if the providerNo is not distinct
-                    providerNo = f'{random.randint(100000, 999999):06d}'
-                    if providerNo not in usedProviderNo:
-                        break
-                    logging.debug('Searching for a free provider number for a GP')
-                usedProviderNo[providerNo] = True
-                outputRow.append(mkProviderNo(providerNo))
-                outputRow.append(mkPrescriberNo(providerNo))
-                while True:        # Loop if the ahpraNo is not distinct
-                    ahpraNo = random.randint(9000000000, 9999999999)
-                    if ahpraNo not in usedAhpraNo:
-                        break
-                    logging.debug('Searching for a free AHPRA number for a GP')
-                usedAhpraNo.add(ahpraNo)
-                outputRow.append('MED' + str(ahpraNo))
-                outputRow.append('Dr.')
-                patients[patientKeys[thisRecord]]['businessPhone'] = clinicPhone
-                # And the Dr fields
-                for field in drFields:
-                    outputRow.append(patients[patientKeys[thisRecord]][field])
-                clinicStaff.append(outputRow)
-                PRD = 'PRD||' + patients[patientKeys[thisRecord]]['familyName'] + '^' + patients[patientKeys[thisRecord]]['givenName'] + '^^^DR^^L'            # PRD-2 Provider Name
-                PRD += '|' + clinicAddr['streetNo'] + ' ' + clinicAddr['streetName'] + ' ' + clinicAddr['streetType']
-                PRD += '^^' + clinicAddr['suburb'] + '^' + clinicAddr['state'] + '^' + clinicAddr['postcode'] + '^AUS^M'   # PRD-3 Provider Address
-                PRD += '||^PRN^PH^^^^^^' + patients[patientKeys[thisRecord]]['homePhone']
-                PRD += '~^PRN^CP^^^^^^' + patients[patientKeys[thisRecord]]['mobile']
-                PRD += '~^NET^Internet^' + patients[patientKeys[thisRecord]]['email']
-                PRD += '~^WPN^PH^^^^^^' + patients[patientKeys[thisRecord]]['businessPhone']            # PRD-5 home phone, mbile, email, business phone
-                PRD += '||' + mkProviderNo(providerNo) + '^AUSHICPR^UPIN'
-                PRD += '~' + mkPrescriberNo(providerNo) + '^AUSHIC^NPI'                                 # PRD-7 Provider identifiers
-                PRDrow = []
-                PRDrow.append(GP_HPII)
-                PRDrow.append(PRD)
-                HL7_PRD.append(PRDrow)
-                FHIR_Practitioner.append([GP_HPII, createPractitioner(thisRecord, clinic_HPIO, GP_HPII, providerNo, ahpraNo)])
-                FHIR_PractitionerRole.append([GP_HPII, createPractitionerRole(thisRecord, clinic_HPIO, GP_HPII, role, specialty)])
+            # Now do the local GP clinics for this local public hospital
+            noOfGPclinics = random.randrange(minClinics, maxClinics)
+            # clinics fields:clinic_HPI-O,clinicName,authority,application,clinicSpecialty,specialtyDescription,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,businessPhone,email])
+            for thisClinic in range(noOfGPclinics):
+                outputRow = [networkHPIO, localPublicHospitalHPIO]
+                # HPI-O as the organization ID
+                record += 1
+                IHI = patients[patientKeys[record]]['IHI']
+                gpClinicHPIO = IHI[:5] + '2' + IHI[6:-1]
+                gpClinicHPIO = f'{gpClinicHPIO}{mkLuhn(gpClinicHPIO):d}'
+                careTeams[gpClinicHPIO] = set()
+                outputRow.append(gpClinicHPIO)
+                uniqueName = False
+                while not uniqueName:
+                    # Create a local address close to this hospital
+                    clinicAddr = mkRandAddress(hospitalSA3, True, makeRandom)
+                    # Create a clinic from street or suburb plus Medical/Medical Clinic/Medical Centre
+                    if random.random() < 0.7:            # street or suburb
+                        clinicName = clinicAddr['streetName'] + ' ' + clinicAddr['streetType']
+                    else:
+                        clinicName = clinicAddr['suburb']
+                    clinicName += ' Medical'
+                    if random.random() < 0.4:            # Clinic or Centre or nothing
+                        clinicName += ' Clinic'
+                    elif random.random() < 0.4:            # Clinic or Centre or nothing
+                        clinicName += ' Centre'
+                    if clinicName in usedGPclinicNames:
+                        logging.debug('Searching of an unused GP clinic name - %s is not unique', clinicName)
+                        continue
+                    usedGPclinicNames.add(clinicName)
+                    uniqueName = True
+                    outputRow.append(clinicName)
+                initials = clinicName.split(' ')
+                authority = ''
+                for initial in initials:
+                    authority += initial[0].upper()
+                outputRow.append(authority)
+                outputRow.append('PAS')
+                outputRow.append('408443003')
+                outputRow.append('General medical practice')
+                clinicPhone = patients[patientKeys[record]]['businessPhone']
+                for field in addressFields:
+                    outputRow.append(clinicAddr[field])
+                # And the clinic specific fields
+                for field in clinicFields:
+                    outputRow.append(patients[patientKeys[record]][field])
+                gpClinics.append(outputRow)
+                FHIR_Organization.append([gpClinicHPIO, createOrganization(record, gpClinicHPIO, None, clinicName, clinicAddr, 'clinic')])
+                FHIR_Location.append([gpClinicHPIO, createLocation(record, gpClinicHPIO, clinicName, clinicAddr, None)])
+                FHIR_HealthcareService.append([gpClinicHPIO, createHealthcareService(record, gpClinicHPIO, clinicName, 'clinic', '408443003')])
 
-                # Save the CareTeams - the hospital one's may be needed on admission
+                # Now the clinic doctors and their patients
+                noOfDoctors = random.randrange(minDr, maxDr)
+                clinicGPs = set()               # Cannot have the same GP as two records in the one clinic
+                for thisDoctor in range(noOfDoctors):
+                    # clinic Staff fields:clinic_HPI-O,staffSpecialty,specialtyDescripion,role,roleDescription,HPI-I,providerNo,title,familyName,givenName,birthdate,sex,workMobile,businessPhone,workEmail
+                    outputRow = [networkHPIO, localPublicHospitalHPIO, gpClinicHPIO]
+                    gpHPII = None
+                    providerNo = None
+                    prescriberNo = None
+                    ahpraNo = None
+                    availableGPs = set(localGPs[localPublicHospitalHPIO].keys()) - clinicGPs
+                    if (len(availableGPs) > 20) and (random.random() < 0.2):  # 20% chance to pick from available GPs
+                        thisRecord = random.choice(list(availableGPs))
+                        gpHPII = localGPs[localPublicHospitalHPIO][thisRecord]['gpHPII']
+                        providerNo = localGPs[localPublicHospitalHPIO][thisRecord]['providerNo']
+                        usedProviderNo[providerNo] += 1
+                        if usedProviderNo[providerNo] == 30:
+                            providerNo = None
+                        prescriberNo = localGPs[localPublicHospitalHPIO][thisRecord]['prescriberNo']
+                        ahpraNo = localGPs[localPublicHospitalHPIO][thisRecord]['ahpraNo']
+                    else:
+                        record += 1
+                        thisRecord = record
+                        localGPs[localPublicHospitalHPIO][thisRecord] = {}
+                    clinicGPs.add(thisRecord)
+                    if gpHPII is None:
+                        IHI = patients[patientKeys[thisRecord]]['IHI']
+                        gpHPII = IHI[:5] + '1' + IHI[6:-1]
+                        gpHPII = f'{gpHPII}{mkLuhn(gpHPII):d}'
+                        localGPs[localPublicHospitalHPIO][thisRecord]['gpHPII'] = gpHPII
+                    if gpHPII not in practitionerDetails:
+                        practitionerDetails[gpHPII] = {}
+                        practitionerDetails[gpHPII]['providerNos'] = []
+                        practitionerDetails[gpHPII]['record'] = thisRecord
+                    careTeams[gpClinicHPIO].add(gpHPII)
+                    outputRow.append(gpHPII)
+                    # Pick a specialty
+                    specialty = random.choice(list(GPspecialties))
+                    outputRow.append(specialty)
+                    outputRow.append(Specialties[specialty])
+                    role = GPspecialties[specialty]
+                    outputRow.append(role)
+                    outputRow.append(Roles[role])
+                    # Doctors have their own HPI-I codes
+                    if providerNo is None:
+                        while True:        # Loop if the providerNo is not distinct
+                            providerNo = f'{random.randint(100000, 999999):06d}'
+                            if providerNo not in usedProviderNo:
+                                break
+                            logging.debug('Searching for a free provider number for a GP')
+                        usedProviderNo[providerNo] = 0
+                        localGPs[localPublicHospitalHPIO][thisRecord]['providerNo'] = providerNo
+                    practitionerDetails[gpHPII]['providerNos'].append(mkProviderNo(providerNo))
+                    outputRow.append(mkProviderNo(providerNo))
+                    if prescriberNo is None:
+                        prescriberNo = mkPrescriberNo(providerNo)
+                        localGPs[localPublicHospitalHPIO][thisRecord]['prescriberNo'] = prescriberNo                    
+                    practitionerDetails[gpHPII]['prescriberNo'] = prescriberNo
+                    outputRow.append(prescriberNo)
+                    if ahpraNo is None:
+                        while True:        # Loop if the ahpraNo is not distinct
+                            ahpraNo = random.randint(9000000000, 9999999999)
+                            if ahpraNo not in usedAhpraNo:
+                                break
+                            logging.debug('Searching for a free AHPRA number for a GP')
+                        usedAhpraNo.add(ahpraNo)
+                        localGPs[localPublicHospitalHPIO][thisRecord]['ahpraNo'] = ahpraNo
+                    practitionerDetails[gpHPII]['ahpraNo'] = ahpraNo
+                    outputRow.append('MED' + str(ahpraNo))
+                    outputRow.append('Dr.')
+                    patients[patientKeys[thisRecord]]['businessPhone'] = clinicPhone
+                    # And the Dr fields
+                    for field in drFields:
+                        outputRow.append(patients[patientKeys[thisRecord]][field])
+                    gpClinicStaff.append(outputRow)
+                    PRD = 'PRD||' + patients[patientKeys[thisRecord]]['familyName'] + '^' + patients[patientKeys[thisRecord]]['givenName'] + '^^^DR^^L'            # PRD-2 Provider Name
+                    PRD += '|' + clinicAddr['streetNo'] + ' ' + clinicAddr['streetName'] + ' ' + clinicAddr['streetType']
+                    PRD += '^^' + clinicAddr['suburb'] + '^' + clinicAddr['state'] + '^' + clinicAddr['postcode'] + '^AUS^M'   # PRD-3 Provider Address
+                    PRD += '||^PRN^PH^^^^^^' + patients[patientKeys[thisRecord]]['homePhone']
+                    PRD += '~^PRN^CP^^^^^^' + patients[patientKeys[thisRecord]]['mobile']
+                    PRD += '~^NET^Internet^' + patients[patientKeys[thisRecord]]['email']
+                    PRD += '~^WPN^PH^^^^^^' + patients[patientKeys[thisRecord]]['businessPhone']            # PRD-5 home phone, mbile, email, business phone
+                    PRD += '||' + mkProviderNo(providerNo) + '^AUSHICPR^UPIN'
+                    PRD += '~' + prescriberNo + '^AUSHIC^NPI'                                 # PRD-7 Provider identifiers
+                    PRDrow = []
+                    PRDrow.append(gpHPII)
+                    PRDrow.append(PRD)
+                    HL7_PRD.append(PRDrow)
+                    # FHIR_Practitioner.append([gpHPII, createPractitioner(thisRecord, gpClinicHPIO, gpHPII, providerNo, ahpraNo)])
+                    FHIR_PractitionerRole.append([gpHPII, createPractitionerRole(thisRecord, gpClinicHPIO, gpHPII, role, specialty)])
 
-
-                # An finally the patients for this GP
-                if Patients:
-                    # patients fields:clinic_HPI-O,GP_HPI-I,IHI,title,familyName,givenName,birthdate,sex,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,mobile,homePhone,businessPhone,email,medicareNo,dvaNo,dvaType,height,weight,waist,hips,married,race
-                    noOfPatients = random.randrange(minPatients, maxPatients)
-                    clinicPatientRecords = set()
-                    for thisPatient in range(noOfPatients):
-                        if (len(usedIHI) > 20) and (len(usedIHI) > len(clinicPatientRecords)) and (random.random() < 0.1):
-                            thisRecord = random.choice(list(usedIHI))
-                            while thisRecord in clinicPatientRecords:
-                                thisRecord = random.choice(list(usedIHI))
-                                logging.debug('Searching for a used patient')
-                            IHI = patients[patientKeys[thisRecord]]['IHI']
-                        else:
-                            record += 1
-                            thisRecord = record
-                            usedIHI.add(record)
-                            IHI = patients[patientKeys[record]]['IHI']
+                    # And finally the patients for this GP and the patient's careteam
+                    if Patients:
+                        # patients fields:clinic_HPI-O,GP_HPI-I,IHI,title,familyName,givenName,birthdate,sex,streetNo,streetName,shortStreetType,suburb,state,postcode,longitude,latitude,meshblock,sa1,country,mobile,homePhone,businessPhone,email,medicareNo,dvaNo,dvaType,height,weight,waist,hips,married,race
+                        noOfPatients = random.randrange(minPatients, maxPatients)
+                        gpPatients = set()              # Can't have two records for the same patient for this GP
+                        for thisPatient in range(noOfPatients):
+                            patientIHI = None
+                            availablePatients = set(localPatients[localPublicHospitalHPIO].keys()) - gpPatients
+                            if (len(availablePatients) > 20) and (random.random() < 0.1):
+                                thisRecord = random.choice(list(availablePatients))
+                                patientIHI = localPatients[localPublicHospitalHPIO][thisRecord]['Patient IHI']
+                            else:
+                                newPatient = True
+                                record += 1
+                                thisRecord = record
+                                # Create a local address close to this patient
+                                patientAddr = mkRandAddress(hospitalSA3, True, makeRandom)
+                                for field in patientAddr:
+                                    patients[patientKeys[thisRecord]][field] = patientAddr[field]
+                                PIDsegment = patients[patientKeys[thisRecord]]['PID']
+                                PIDfields = PIDsegment.split('|')
+                                # Update the address (PID-11)
+                                PIDfields[11] = f"{patientAddr['streetNo']} {patientAddr['streetName']} {patientAddr['shortStreetType']}^^{patientAddr['suburb']}^{patientAddr['state']}^{patientAddr['postcode']}^AUS^M]"
+                                patients[patientKeys[thisRecord]]['PID'] = '|'.join(PIDfields)
+                                # Update LIS2 P-11
+                                Psegment = patients[patientKeys[thisRecord]]['LIS2']
+                                Pfields = Psegment.split('|')
+                                Pfields[10] = f"{patientAddr['streetNo']} {patientAddr['streetName']} {patientAddr['shortStreetType']}^{patientAddr['suburb']}^{patientAddr['state']}^{patientAddr['postcode']}^AUS]"
+                                patients[patientKeys[thisRecord]]['LIS2'] = '|'.join(Pfields)
+                                localPatients[localPublicHospitalHPIO][thisRecord] = {}
+                            gpPatients.add(thisRecord)
+                            if patientIHI is None:
+                                patientIHI = patients[patientKeys[thisRecord]]['IHI']
+                                localPatients[localPublicHospitalHPIO][thisRecord]['Patient IHI'] = patientIHI
                             PIDrow = []
-                            PIDrow.append(IHI)
-                            thisPID = patients[patientKeys[record]]['PID']
+                            PIDrow.append(patientIHI)
+                            thisPID = patients[patientKeys[thisRecord]]['PID']
                             PIDrow.append(thisPID)
                             HL7_PID.append(PIDrow)
                             Prow = []
-                            Prow.append(IHI)
-                            thisLIS2 = patients[patientKeys[record]]['LIS2']
+                            Prow.append(patientIHI)
+                            thisLIS2 = patients[patientKeys[thisRecord]]['LIS2']
                             Prow.append(thisLIS2)
                             LIS2_P.append(Prow)
-                            patientDetails[IHI] = {}
-                            patientDetails[IHI]['record'] = thisRecord
-                            patientDetails[IHI]['GPs'] = []
-                            clinicPatientRecords.add(thisRecord)
-                            outputRow = []
-                            outputRow.append(clinic_HPIO)
-                            outputRow.append(GP_HPII)
+                            if patientIHI not in patientDetails:
+                                patientDetails[patientIHI] = {}
+                                patientDetails[patientIHI]['GPs'] = []
+                            patientDetails[patientIHI]['record'] = thisRecord
+                            outputRow = [networkHPIO, localPublicHospitalHPIO, gpClinicHPIO, gpHPII, patientIHI]
                             for field in patientFields1:
                                 outputRow.append(patients[patientKeys[thisRecord]][field])
                             for field in addressFields:
@@ -1888,19 +2145,38 @@ The main code
                             for field in patientFields2:
                                 outputRow.append(patients[patientKeys[thisRecord]][field])
                             clinicPatients.append(outputRow)
-                        patientDetails[IHI]['GPs'].append(GP_HPII + '-' + clinic_HPIO)
-                        FHIR_CareTeam.append([IHI, clinic_HPIO, createCareTeam(thisRecord, IHI, clinic_HPIO)])
+                            patientDetails[patientIHI]['GPs'].append(gpHPII + '-' + gpClinicHPIO)
+                            FHIR_CareTeam.append([patientIHI, gpClinicHPIO, createCareTeam(thisRecord, patientIHI, gpClinicHPIO)])
 
-    # Then the patients details
+    # Then the FHIR details
+    for HPII, details in practitionerDetails.items():
+        thisRecord = details['record']
+        providerNos = details['providerNos']
+        prescriberNo = details['prescriberNo']
+        ahpraNo = details['ahpraNo']
+        FHIR_Practitioner.append([HPII, createPractitioner(thisRecord, HPII, providerNos, prescriberNo, ahpraNo)])
+
     if Patients:
-        for IHI, IHIdetails in patientDetails.items():
+        for patientIHI, IHIdetails in patientDetails.items():
             thisRecord = IHIdetails['record']
             GPs = IHIdetails['GPs']
-            FHIR_Patient.append([IHI, createPatient(thisRecord, IHI, GPs)])
+            FHIR_Patient.append([patientIHI, createPatient(thisRecord, patientIHI, GPs)])
 
     # Then template for department care teams
     for deptHPIO in deptHPIOs:
         FHIR_CareTeam.append(['ReplaceWithIHI', deptHPIO, createCareTeam(None, 'ReplaceWithIHI', deptHPIO)])
+
+    for thisSheet in sheets:
+        ws = wb[thisSheet]
+        column_widths = []
+        for row in ws.iter_rows():
+            for i, cell in enumerate(row):
+                if len(column_widths) <= i:
+                    column_widths.append(0)
+                if cell.value:
+                    column_widths[i] = max(column_widths[i], len(str(cell.value)))
+        for i, column_width in enumerate(column_widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = column_width
 
     wb.save(os.path.join(outputDir, outputfile))
     logging.shutdown()
