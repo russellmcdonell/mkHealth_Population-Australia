@@ -1009,7 +1009,7 @@ def mkDepartments(networkHPIO, localHospitalHPIO, hospitalHPIO, thisAddr, hospit
     global hospitals, deptHPIOs, patients, patientKeys, record, departmentSpecialties, Specialties, departmentFields
     global publicHospitalDepartments, privateHospitalDepartments, FHIR_Organization, FHIR_HealthcareService
     global localSpecialists, localNurses, localGPs, usedProviderNo, usedAhpraNo, publicHospialStaff, privateHospitalStafff
-    global HL7_PID, FHIR_Practitioner, FHIR_PractitionerRole, Roles
+    global FHIR_PractitionerRole, Roles
 
     # Now create some departments and staff for this hospital
     # department fields:hospital_HPI-O,department_HPI-O,departmentName,application,departmentSpecialty,specialtyDescription
@@ -1146,7 +1146,6 @@ def mkDepartments(networkHPIO, localHospitalHPIO, hospitalHPIO, thisAddr, hospit
             PRDrow.append(hospitalSpecialistHPII)
             PRDrow.append(PRD)
             HL7_PRD.append(PRDrow)
-            # FHIR_Practitioner.append([hospitalSpecialistHPII, createPractitioner(thisRecord, departmentHPIO, hospitalSpecialistHPII, providerNo, ahpraNo)])
             FHIR_PractitionerRole.append([hospitalSpecialistHPII, createPractitionerRole(thisRecord, departmentHPIO, hospitalSpecialistHPII, role, departmentSpecialties[department])])
 
         outputRow = []
@@ -1246,7 +1245,6 @@ def mkDepartments(networkHPIO, localHospitalHPIO, hospitalHPIO, thisAddr, hospit
             PRDrow.append(nurseHPII)
             PRDrow.append(PRD)
             HL7_PRD.append(PRDrow)
-            # FHIR_Practitioner.append([nurseHPII, createPractitioner(thisRecord, departmentHPIO, nurseHPII, nurseProviderNo, ahpraNo)])
             FHIR_PractitionerRole.append([nurseHPII, createPractitionerRole(thisRecord, departmentHPIO, nurseHPII, role, departmentSpecialties[department])])
     return
 
@@ -1944,7 +1942,6 @@ The main code
                     PRDrow.append(specialistHPII)
                     PRDrow.append(PRD)
                     HL7_PRD.append(PRDrow)
-                    # FHIR_Practitioner.append([specialistHPII, createPractitioner(thisRecord, specialistServiceHPIO, specialistHPII, providerNo, ahpraNo)])
                     FHIR_PractitionerRole.append([specialistHPII, createPractitionerRole(thisRecord, specialistServiceHPIO, specialistHPII, role, specialty)])
 
             # Now do the local GP clinics for this local public hospital
@@ -2086,7 +2083,6 @@ The main code
                     PRDrow.append(gpHPII)
                     PRDrow.append(PRD)
                     HL7_PRD.append(PRDrow)
-                    # FHIR_Practitioner.append([gpHPII, createPractitioner(thisRecord, gpClinicHPIO, gpHPII, providerNo, ahpraNo)])
                     FHIR_PractitionerRole.append([gpHPII, createPractitionerRole(thisRecord, gpClinicHPIO, gpHPII, role, specialty)])
 
                     # And finally the patients for this GP and the patient's careteam
@@ -2111,12 +2107,12 @@ The main code
                                 PIDsegment = patients[patientKeys[thisRecord]]['PID']
                                 PIDfields = PIDsegment.split('|')
                                 # Update the address (PID-11)
-                                PIDfields[11] = f"{patientAddr['streetNo']} {patientAddr['streetName']} {patientAddr['shortStreetType']}^^{patientAddr['suburb']}^{patientAddr['state']}^{patientAddr['postcode']}^AUS^M]"
+                                PIDfields[11] = f"{patientAddr['streetNo']} {patientAddr['streetName']} {patientAddr['shortStreetType']}^^{patientAddr['suburb']}^{patientAddr['state']}^{patientAddr['postcode']}^AUS^M"
                                 patients[patientKeys[thisRecord]]['PID'] = '|'.join(PIDfields)
                                 # Update LIS2 P-11
                                 Psegment = patients[patientKeys[thisRecord]]['LIS2']
                                 Pfields = Psegment.split('|')
-                                Pfields[10] = f"{patientAddr['streetNo']} {patientAddr['streetName']} {patientAddr['shortStreetType']}^{patientAddr['suburb']}^{patientAddr['state']}^{patientAddr['postcode']}^AUS]"
+                                Pfields[10] = f"{patientAddr['streetNo']} {patientAddr['streetName']} {patientAddr['shortStreetType']}^{patientAddr['suburb']}^{patientAddr['state']}^{patientAddr['postcode']}^AUS"
                                 patients[patientKeys[thisRecord]]['LIS2'] = '|'.join(Pfields)
                                 localPatients[localPublicHospitalHPIO][thisRecord] = {}
                             gpPatients.add(thisRecord)

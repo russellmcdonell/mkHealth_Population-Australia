@@ -10,25 +10,29 @@ created by mkHealthPopulation.py
 SYNOPSIS
 $ python mkHL7v2.py [-I inputDir|--inputDir=inputDir] [-i inputfile|--inputfile=inputfile]
                     [-O outputDir|--outputDir=outputDir] [-o outputfile|--outputfile=outputfile]
+                    [-N noOfEncounters|--noOfEncounters=noOfEncounters]
                     [-v loggingLevel|--loggingLevel=loggingLevel]
                     [-L logDir|--logDir=logDir] [-l logfile|--logfile=logfile]
 
 OPTIONS
 -I inputDir|--inputDir=inputDir
-The directory containing input file will be created (default='input')
-[mkHL7v2.cfg will be read from this directory]
+The directory containing input file of synthetic health population - output created by mkHealthPopulation.py
+[mkHL7v2.cfg will be read from this directory] (default="output")
 
 -i inputfile|--infile=inputfile
-The input file to be created (default='clinicDoctors.csv')
+The input file to be read (default='healthPopulation.xlsx')
 
 -O outputDir|--outputDir=outputDir
 The directory in which the output file will be created (default='output')
 
 -o outputfile|--outputfile=outputfile
-The output file to be created (default='clinicDoctors.csv')
+The output file to be created (default='ADT.hl7')
 
 -v loggingLevel|--verbose=loggingLevel
-Set the level of logging that you want.
+Set the level of logging that you want (0=CRITICAL,1=ERROR,2=WARNING,3=INFO,4=DEBUG).
+
+-N noOfPatientsAdmitted|--noOfPatientsAdmitted=noOfPatientsAdmitted
+The number of patients to be admitted/transfered/discharged [encounters] (default=10)
 
 -L logDir|--logDir=logDir
 The name of the folder for the logging file
@@ -44,7 +48,7 @@ import logging
 import configparser
 import random
 import csv
-import datetime
+from datetime import datetime as dt, timedelta as td
 from openpyxl import load_workbook
 from openpyxl import utils
 
@@ -87,6 +91,8 @@ The main code
                         help='The name of the output directory [mkHL7v2.cfg will be read from this directory] (default="output")')
     parser.add_argument('-o', '--outputfile', metavar='outputfile', dest='outputfile', default='ADT.hl7',
                         help='The name of file of HL7 messages to be created (default="ADT.hl7"')
+    parser.add_argument('-N', '--noOfEncounters', metavar='noOfEncounters', dest='noOfEncounters', type=int, default=10,
+                        help='The number of patients to be admitted/transfered/discharged [encounters] (default=10)')
     parser.add_argument('-v', '--verbose', dest='loggingLevel', type=int, choices=range(0, 5),
                         help='The level of logging\n\t0=CRITICAL,1=ERROR,2=WARNING,3=INFO,4=DEBUG')
     parser.add_argument('-L', '--logDir', dest='logDir', default='logs',
@@ -120,6 +126,7 @@ The main code
     inputfile = args.inputfile
     outputDir = args.outputDir
     outputfile = args.outputfile
+    noOfEncounters = args.noOfEncounters
 
     # Read in the spreadsheet of hospitals and patients
     try:
@@ -127,7 +134,6 @@ The main code
     except (utils.exceptions.InvalidFileException, IOError):
         logging.fatal('No workbook named %s!', inputfile)
         logging.shutdown()
-        sys.stdout.flush()
         sys.exit(EX_CONFIG)
 
     # Start with the network of public hospitals
@@ -136,211 +142,163 @@ The main code
     except KeyError:
         logging.fatal('No workbook spreadsheet named %s!', 'Health Networks')
         logging.shutdown()
-        sys.stdout.flush()
         sys.exit(EX_CONFIG)
 
-    header = True
-    networkNames = []
-    networkID = {}
-    networkAuth = {}
-    for row in ws.values:
-        if header:
-            header = False
-            continue
-        values = list(row)
-        network = values[0]
-        name = values[1]
-        auth = values[2]
-        if name in networkNames:
-            continue
-        networkNames.append(name)
-        networkID[name] = network
-        networkAuth[network] = auth
+    networks = {}
+    networkNames = {}
+    data = ws.iter_rows(values_only=True)
+    headings = next(data)
+    for row in data:
+        if row[0] is None:
+            break
+        thisNetwork = dict(zip(headings, row))
+        thisNetworkHPIO = thisNetwork['Network HPI-O']
+        networks[thisNetworkHPIO] = thisNetwork
+        networkNames[thisNetwork['Network Name']] = thisNetworkHPIO
 
-    # Next get the associated public hospitals
-    try:
-        ws = wb['Public Hospitals']
-    except KeyError:
-        logging.fatal('No workbook spreadsheet named %s!', 'Public Hospitals')
-        logging.shutdown()
-        sys.stdout.flush()
-        sys.exit(EX_CONFIG)
-
-    header = True
-    hospitalNames = []
-    hospitalID = {}
-    hospitalAuth = {}
-    hospitalNetwork = {}
-    for row in ws.values:
-        if header:
-            header = False
-            continue
-        values = list(row)
-        network = values[0]
-        hospital = values[1]
-        name = values[2]
-        if name in hospitalNames:
-            continue
-        hospitalNames.append(name)
-        hospitalID[name] = hospital
-        hospitalNetwork[hospital] = network
-        hospitalAuth[hospital] = networkAuth[network]
-
-    # Next, collect some wards for the public hospitals
-    try:
-        ws = wb['Public Hospital Departments']
-    except KeyError:
-        logging.fatal('No workbook spreadsheet named %s!', 'Public Hospital Departments')
-        logging.shutdown()
-        sys.stdout.flush()
-        sys.exit(EX_CONFIG)
-
+    # Next get the hospitals
+    hospitals = {}
+    hospitalNames = {}
     hospitalWards = {}
-    hospitalWardIDs = {}
-    header = True
-    for row in ws.values:
-        if header:
-            header = False
-            continue
-        values = list(row)
-        hospital = values[0]
-        ward = values[1]
-        name = values[2]
-        if hospital not in hospitalWards:
-            hospitalWards[hospital] = {}
-        hospitalWards[hospital][ward] = values[2:4]
-        if hospital not in hospitalWardIDs:
-            hospitalWardIDs[hospital] = {}
-        hospitalWardIDs[hospital][name] = ward
+    for hospitalType in ['Public', 'Private']:
+        try:
+            ws = wb[f'{hospitalType} Hospitals']
+        except KeyError:
+            logging.fatal('No workbook spreadsheet named %s!', f'{hospitalType} Hospitals')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
 
-    # Next get the private hospitals
+        data = ws.iter_rows(values_only=True)
+        headings = next(data)
+        for row in data:
+            if row[0] is None:
+                break
+            thisHospital = dict(zip(headings, row))
+            thisHospital['hospitalType'] = hospitalType
+            if hospitalType == 'Public':
+                thisHospitalHPIO = thisHospital['Hospital HPI-O']
+            else:
+                thisHospitalHPIO = thisHospital[f'{hospitalType} Hospital HPI-O']
+            thisHospitalName = thisHospital['Hospital Name']
+            hospitals[thisHospitalHPIO] = thisHospital
+            hospitalNames[thisHospitalName] = thisHospitalHPIO
+
+        # Next, collect some wards for the public hospitals
+        try:
+            ws = wb[f'{hospitalType} Hospital Departments']
+        except KeyError:
+            logging.fatal('No workbook spreadsheet named %s!', f'{hospitalType} Hospital Departments')
+            logging.shutdown()
+            sys.exit(EX_CONFIG)
+
+        data = ws.iter_rows(values_only=True)
+        headings = next(data)
+        for row in data:
+            if row[0] is None:
+                break
+            thisHospitalWard = dict(zip(headings, row))
+            if hospitalType == 'Public':
+                thisHospitalHPIO = thisHospitalWard['Hospital HPI-O']
+            else:
+                thisHospitalHPIO = thisHospitalWard[f'{hospitalType} Hospital HPI-O']
+            if thisHospitalHPIO not in hospitalWards:
+                hospitalWards[thisHospitalHPIO] = []
+            hospitalWards[thisHospitalHPIO].append(thisHospitalWard)
+
+    # Next get some local patients
+    localPatients = {}
     try:
-        ws = wb['Private Hospitals']
+        ws = wb['Patients']
     except KeyError:
-        logging.fatal('No workbook spreadsheet named %s!', 'Private Hospitals')
+        logging.fatal('No workbook spreadsheet named %s!', 'Patients')
         logging.shutdown()
-        sys.stdout.flush()
         sys.exit(EX_CONFIG)
 
-    header = True
-    for row in ws.values:
-        if header:
-            header = False
-            continue
-        values = list(row)
-        hospital = values[0]
-        name = values[1]
-        auth = values[2]
-        if name in hospitalNames:
-            continue
-        hospitalNames.append(name)
-        hospitalID[name] = hospital
-        hospitalAuth[hospital] = auth
+    data = ws.iter_rows(values_only=True)
+    headings = next(data)
+    for row in data:
+        if row[0] is None:
+            break
+        thisPatient = dict(zip(headings, row))
+        thisPatientsLocalPublicHospital = thisPatient['Local Public Hospital HPI-O']
+        if thisPatientsLocalPublicHospital not in localPatients:
+            localPatients[thisPatientsLocalPublicHospital] = []
+        localPatients[thisPatientsLocalPublicHospital].append(thisPatient)
 
-    # Next, collect some wards for the private hospitals
-    try:
-        ws = wb['Private Hospital Departments']
-    except KeyError:
-        logging.fatal('No workbook spreadsheet named %s!', 'Private Hospital Departments')
-        logging.shutdown()
-        sys.stdout.flush()
-        sys.exit(EX_CONFIG)
-
-    header = True
-    for row in ws.values:
-        if header:
-            header = False
-            continue
-        values = list(row)
-        hospital = values[0]
-        ward = values[1]
-        name = values[2]
-        if hospital not in hospitalWards:
-            hospitalWards[hospital] = {}
-        hospitalWards[hospital][ward] = values[2:4]
-        if hospital not in hospitalWardIDs:
-            hospitalWardIDs[hospital] = {}
-        hospitalWardIDs[hospital][name] = ward
-
+    # And finally, collect the HL7 PID segments for the patients
     try:
         ws = wb['HL7_PID']
     except KeyError:
         logging.fatal('No workbook spreadsheet named %s!', 'HL7_PID')
         logging.shutdown()
-        sys.stdout.flush()
+        logging.shutdown()
         sys.exit(EX_CONFIG)
 
-    # Then collect the PID segments
-    header = True
-    patients = {}
-    for row in ws.values:
-        if header:
-            header = False
-            continue
-        values = list(row)
-        patients[values[0]] = values[1]
+    patientPIDs = {}
+    data = ws.iter_rows(values_only=True)
+    headings = next(data)
+    for row in data:
+        if row[0] is None:
+            break
+        thisPatient = dict(zip(headings, row))
+        thisPatientIHI = thisPatient['IHI']
+        patientPIDs[thisPatientIHI] = thisPatient
     logging.info('workbook loaded\n')
 
     # Then read in the configuration from mkHL7v2.cfg
     config = configparser.ConfigParser(allow_no_value=True)
     config.optionxform = str
-    hospitals = {}
-    networkNextUR = {}
     try:
         config.read(os.path.join(outputDir, 'mkHL7v2.cfg'))
         for section in config.sections():
             if section == 'receiver':
                 receivingApp = config[section]['receivingApp']
                 receivingFac = config[section]['receivingFac']
-                receivingVersion = config[section]['receivingVersion']
+                version = config[section]['version']
             elif section == 'patients':
                 NoOfPatients = config[section]['number']
-                start = config[section]['start']
-                end = config[section]['end']
+                start = dt.strptime(config[section]['start'], '%Y%m%d')
+                end = dt.strptime(config[section]['end'], '%Y%m%d')
                 minLOS = int(config[section]['minLOS'])
                 maxLOS = int(config[section]['maxLOS'])
             elif section in networkNames:
-                thisNetworkID = networkID[section]
-                networkNextUR[thisNetworkID] = int(config[section]['nextUR'])
+                networkHPIO = networkNames[section]
+                networks[networkHPIO]['nextUR'] = int(config[section]['nextUR'])
             elif section in hospitalNames:
-                hospital = hospitalID[section]
-                hospitals[hospital] = {}
-                if hospital not in hospitalNetwork:
-                    hospitals[hospital]['nextUR'] = int(config[section]['nextUR'])
-                hospitals[hospital]['admitting'] = []
+                hospitalHPIO = hospitalNames[section]
+                if hospitals[hospitalHPIO]['hospitalType'] == 'Private':
+                    hospitals[hospitalHPIO]['nextUR'] = int(config[section]['nextUR'])
                 for row in csv.reader([config[section]['admitting']], csv.excel):
-                    admitting = row
-                    break
-                for ward in admitting:
-                    if ward not in hospitalWardIDs[hospital]:
-                        continue
-                    wardID = hospitalWardIDs[hospital][ward]
-                    hospitals[hospital]['admitting'].append(wardID)
-                hospitals[hospital]['transfer'] = []
+                    hospitals[hospitalHPIO]['admitting'] = row
                 for row in csv.reader([config[section]['transfer']], csv.excel):
-                    transfer = row
-                    break
-                for ward in transfer:
-                    if ward not in hospitalWardIDs[hospital]:
-                        continue
-                    wardID = hospitalWardIDs[hospital][ward]
-                    hospitals[hospital]['transfer'].append(wardID)
+                    hospitals[hospitalHPIO]['transfer'] = row
+            else:
+                logging.fatal('Configuration for unknown network or hospital: %s', section)
+                logging.shutdown()
+                sys.exit(EX_CONFIG)
     except (configparser.MissingSectionHeaderError, configparser.NoSectionError,
             configparser.NoOptionError, configparser.ParsingError) as detail:
         logging.fatal('%s', detail)
         logging.fatal('%s', section)
         logging.fatal('%s', repr(config[section]))
         logging.shutdown()
-        sys.stdout.flush()
         sys.exit(EX_CONFIG)
 
+    # Delete any "unconfigured" hospitals or networks
+    for hospitalHPIO in list(hospitals.keys()):
+        if 'admitting' not in hospitals[hospitalHPIO]:
+            del hospitals[hospitalHPIO]
+    for networkHPIO in list(networks.keys()):
+        if 'nextUR' not in networks[networkHPIO]:
+            del networks[networkHPIO]
+
     # Create a template MSH segment
-    MSH  = 'MSH|^~\\&|<sendApp>|<sendFac>|' + receivingApp + '|' + receivingFac + '|'
+    MSH  = f'MSH|^~\\&|PAS|<sendingFac>|{receivingApp}|{receivingFac}|'
     MSH += '<dateTime>||'                # MSH-7 and MSH-8 [skip security]
     MSH += '<message>|'                    # MSH-9 - Message Type
     MSH += '<dateTime><controlID>|'    # MSH-10
     MSH += 'P|'                        # MSH-11 (P by default)
-    MSH += receivingVersion                    # MSH-12 (configured version by default)
+    MSH += version                    # MSH-12 (configured version by default)
 
     # Create a template EVN segment
     EVN = 'EVN||<dateTime>'            # EVN - date/time
@@ -351,84 +309,90 @@ The main code
     # Now we make some HL7 messages
     controlID = 0
     with open(os.path.join(outputDir, outputfile), 'wt', newline='\r', encoding='utf-8') as HL7file:
-        for patient, PID in patients.items():
+        for encounter in range(noOfEncounters):
             thisLOS = minLOS
             thisMaxLOS = random.randrange(minLOS, maxLOS - 1) + 1
             thisStart = start
-            hospital = random.choice(list(hospitals))
-            sendFac = hospitalAuth[hospital]
-            ward = random.choice(hospitals[hospital]['admitting'])
-            wardName = hospitalWards[hospital][ward][0]
-            sendApp = hospitalWards[hospital][ward][1]
-            dateTime = thisStart + f'{random.randrange(24):02d}{random.randrange(60):02d}{random.randrange(60):02d}'
-            createDateTime = thisStart + f'{random.randrange(24):02d}{random.randrange(60):02d}{random.randrange(60):02d}'
+            hospitalHPIO = random.choice(list(hospitals.keys()))
+            thisHospital = hospitals[hospitalHPIO]
+            if thisHospital['hospitalType'] == 'Public':
+                thisNetworkHPIO = thisHospital['Network HPI-O']
+                authority = networks[thisNetworkHPIO]['authority']
+                UR = networks[thisNetworkHPIO]['nextUR']
+                networks[thisNetworkHPIO]['nextUR'] += 1
+                thisLocalHospitalHPIO = thisHospital['Hospital HPI-O']
+            else:
+                authority = thisHospital['authority']
+                UR = thisHospital['nextUR']
+                thisHospital['nextUR'] += 1
+                thisLocalHospitalHPIO = thisHospital['Local Public Hospital HPI-O']
+            # Next chose a local patient
+            thisPatient  = random.choice(localPatients[thisLocalHospitalHPIO])
+            thisPatientIHI = thisPatient['Patient IHI']
+            PIDrow = patientPIDs[thisPatientIHI]
+            PID = PIDrow['PID']
+            # Select an admission ward
+            ward = random.choice(thisHospital['admitting'])
+            dateTime = thisStart + td(hours=random.randrange(24)) + td(minutes=random.randrange(60)) + td(seconds=random.randrange(60))
+            createDateTime = thisStart + td(hours=random.randrange(24)) + td(minutes=random.randrange(60)) + td(seconds=random.randrange(60))
             if dateTime < createDateTime:
                 tmp = dateTime
                 dateTime = createDateTime
                 createDateTime = tmp
             # Create the patient
-            thisMSH = MSH.replace('<sendApp>', sendApp).replace('<sendFac>', sendFac)
+            thisMSH = MSH.replace('<sendFac>', authority)
             thisMSH = thisMSH.replace('<message>', 'ADT^A28')
-            thisMSH = thisMSH.replace('<dateTime>', createDateTime).replace('<controlID>', f'{controlID:06d}')
+            thisMSH = thisMSH.replace('<dateTime>', dt.strftime(createDateTime, '%Y%m%d%H%M%S')).replace('<controlID>', f'{controlID:06d}')
             controlID += 1
             controlID %= 100000
-            thisEVN = EVN.replace('<dateTime>', createDateTime)
-            if hospital in hospitalNetwork:
-                network = hospitalNetwork[hospital]
-                UR = networkNextUR[network]
-                networkNextUR[network] += 1
-            else:
-                UR = hospitals[hospital]['nextUR']
-                hospitals[hospital]['nextUR'] += 1
-            PID = PID.replace('<UR>', str(UR)).replace('<AUTH>', sendFac)
+            thisEVN = EVN.replace('<dateTime>', dt.strftime(createDateTime, '%Y%m%d%H%M%S'))
+            PID = PID.replace('<UR>', str(UR)).replace('<AUTH>', authority)
             thisHL7 = '\r'.join([thisMSH, thisEVN, PID])
             print(thisHL7, file=HL7file)
 
             # Admit the patient
-            thisMSH = MSH.replace('<sendApp>', sendApp).replace('<sendFac>', sendFac)
+            thisMSH = MSH.replace('<sendFac>', authority)
             thisMSH = thisMSH.replace('<message>', 'ADT^A01')
-            thisMSH = thisMSH.replace('<dateTime>', dateTime).replace('<controlID>', f'{controlID:06d}')
+            thisMSH = thisMSH.replace('<dateTime>', dt.strftime(dateTime, '%Y%m%d%H%M%S')).replace('<controlID>', f'{controlID:06d}')
             controlID += 1
             controlID %= 100000
-            thisEVN = EVN.replace('<dateTime>', dateTime)
-            thisPV1 = PV1.replace('<ward>', wardName)
+            thisEVN = EVN.replace('<dateTime>', dt.strftime(dateTime, '%Y%m%d%H%M%S'))
+            thisPV1 = PV1.replace('<ward>', ward)
             thisHL7 = '\r'.join([thisMSH, thisEVN, PID, thisPV1])
             print(thisHL7, file=HL7file)
 
             # Transfer the patient if there's time
-            nextEvent = random.randrange(2, 5)
-            if len(hospitals[hospital]['transfer']) > 1:
+            nextEvent = random.randrange(1, 5)
+            if len(thisHospital['transfer']) > 1:
                 while thisLOS + nextEvent < thisMaxLOS:
-                    nextDate = datetime.datetime.strptime(thisStart, '%Y%m%d') + datetime.timedelta(days=nextEvent)
-                    thisStart = nextDate.strftime('%Y%m%d')
+                    nextDate = thisStart + td(days=nextEvent)
+                    thisStart = nextDate
                     # Transfer the patient
                     oldWard = ward
-                    ward = random.choice(hospitals[hospital]['transfer'])
+                    ward = random.choice(thisHospital['transfer'])
                     while ward == oldWard:
-                        ward = random.choice(hospitals[hospital]['transfer'])
-                    wardName = hospitalWards[hospital][ward][0]
-                    sendApp = hospitalWards[hospital][ward][1]
-                    dateTime = thisStart + f'{random.randrange(24):02d}{random.randrange(60):02d}{random.randrange(60):02d}'
-                    thisMSH = MSH.replace('<sendApp>', sendApp).replace('<sendFac>', sendFac)
+                        ward = random.choice(thisHospital['transfer'])
+                    dateTime = thisStart + td(hours=random.randrange(24)) + td(minutes=random.randrange(60)) + td(seconds=random.randrange(60))
+                    thisMSH = MSH.replace('<sendFac>', authority)
                     thisMSH = thisMSH.replace('<message>', 'ADT^A08')
-                    thisMSH = thisMSH.replace('<dateTime>', dateTime).replace('<controlID>', f'{controlID:06d}')
+                    thisMSH = thisMSH.replace('<dateTime>', dt.strftime(dateTime, '%Y%m%d%H%M%S')).replace('<controlID>', f'{controlID:06d}')
                     controlID += 1
                     controlID %= 100000
-                    thisEVN = EVN.replace('<dateTime>', dateTime)
-                    thisPV1 = PV1.replace('<ward>', wardName)
+                    thisEVN = EVN.replace('<dateTime>', dt.strftime(dateTime, '%Y%m%d%H%M%S'))
+                    thisPV1 = PV1.replace('<ward>', ward)
                     thisHL7 = '\r'.join([thisMSH, thisEVN, PID, thisPV1])
                     print(thisHL7, file=HL7file)
                     thisLOS += nextEvent
                     nextEvent = random.randrange(2, 5)
             # Discharge the patient
-            nextDate = datetime.datetime.strptime(thisStart, '%Y%m%d') + datetime.timedelta(days=nextEvent)
-            thisStart = nextDate.strftime('%Y%m%d')
-            dateTime = thisStart + f'{random.randrange(24):02d}{random.randrange(60):02d}{random.randrange(60):02d}'
-            thisMSH = MSH.replace('<sendApp>', sendApp).replace('<sendFac>', sendFac)
+            nextDate = thisStart + td(days=nextEvent)
+            thisStart = nextDate
+            dateTime = thisStart + td(hours=random.randrange(24)) + td(minutes=random.randrange(60)) + td(seconds=random.randrange(60))
+            thisMSH = MSH.replace('<sendFac>', authority)
             thisMSH = thisMSH.replace('<message>', 'ADT^A03')
-            thisMSH = thisMSH.replace('<dateTime>', dateTime).replace('<controlID>', f'{controlID:06d}')
+            thisMSH = thisMSH.replace('<dateTime>', dt.strftime(dateTime, '%Y%m%d%H%M%S')).replace('<controlID>', f'{controlID:06d}')
             controlID += 1
             controlID %= 100000
-            thisEVN = EVN.replace('<dateTime>', dateTime)
+            thisEVN = EVN.replace('<dateTime>', dt.strftime(dateTime, '%Y%m%d%H%M%S'))
             thisHL7 = '\r'.join([thisMSH, thisEVN, PID, thisPV1])
             print(thisHL7, file=HL7file)

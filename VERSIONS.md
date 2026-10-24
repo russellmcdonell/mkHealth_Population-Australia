@@ -1,6 +1,10 @@
-# mkHealth Population-Australia
+# Version Changes for the mkHealth Population-Australia Project
+
+## mkHealth Population-Australia
 
 ## Version 2.0 - 15-Oct-2026
+
+### mkHealth Population-Australia
 
 **Major data model change - some worksheet names have changed, many column names have changed**.  
 
@@ -17,30 +21,47 @@ If healthcare networks 'A' and 'B' both have '**Childrens Hospital**' then you h
 
 ## Version 1.6 - 22-Sep-2026
 
+### mkHealth Population-Australia
+
 * Fixed bug in Medicare Provider number
 * Added column heading configuration
 
 ## Version 1.5 - 05-Jan-2026
 
+### mkHealth Population-Australia
+
 * Upgraded FHIR resources in mkHealthPopulation to FHIR R5
 
 ## Version 1.4 - 16-Oct-2023
+
+### mkHealth Population-Australia
 
 * Added FHIR resources to mkHealthPopulation
 
 ## Version 1.3 - 21-Sep-2023
 
+### mkHealth Population-Australia
+
 * Added mkHealthPopulation
+
+### mkHL7v2
+
 * Added mkHL7v2
 
 ## Version 1.2 - 14-Aug-2023
+
+### selectGNAF
 
 * Added selectGNAF (for subset of addresses)
 
 ## Version 1.1 - 08-May-2023
 
+### mkPMI
+
 * Added mkPMI
 
 ## Version 1.0 - 06-May-2023
 
-* Initial version
+### All
+
+* Initial versions
